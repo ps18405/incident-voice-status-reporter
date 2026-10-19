@@ -97,17 +97,17 @@ CREATE TABLE IF NOT EXISTS test_runs (
 """
 
 
-def ensure_tables_exist(conn: sqlite3.Connection) -> None:
+def ensure_tables_exist(conn: sqlite.Connection) -> None:
     """Ensure all required tables and seeded mock data exist on every cold start."""
     cursor = conn.cursor()
-    cursor.execute("SELECT name FROM sqlite3_master WHERE type='table' AND name='incidents'")
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='incidents'")
     has_incidents = cursor.fetchone()
     if not has_incidents:
         with conn:
             conn.executescript(SCHEMA_SQL)
             seed_mock_data_if_empty(conn)
     else:
-        cursor.execute("SELECT name FROM sqlite3_master WHERE type='table' AND name='posts'")
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='posts'")
         if not cursor.fetchone():
             with conn:
                 conn.executescript(SCHEMA_SQL)
