@@ -1,0 +1,20 @@
+# Secrets
+.env
+
+# Databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+venv/
+.venv/
+
+# Node / misc
+node_modules/
+*.log
+.DS_Store
+.vercel/

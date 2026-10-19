@@ -1,0 +1,1515 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Incident Voice Status Reporter | SRE Command Center</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-primary: #0b0f19;
+      --bg-secondary: #121826;
+      --bg-card: #182234;
+      --bg-card-hover: #1f2c42;
+      --border-color: #26354f;
+      --border-focus: #3b82f6;
+      
+      --text-main: #f1f5f9;
+      --text-muted: #94a3b8;
+      --text-dim: #64748b;
+      
+      --accent-blue: #38bdf8;
+      --accent-blue-dim: rgba(56, 189, 248, 0.15);
+      --accent-purple: #c084fc;
+      
+      --status-degraded: #ef4444;
+      --status-degraded-bg: rgba(239, 68, 68, 0.15);
+      --status-uncertain: #f59e0b;
+      --status-uncertain-bg: rgba(245, 158, 11, 0.15);
+      --status-recovered: #10b981;
+      --status-recovered-bg: rgba(16, 185, 129, 0.15);
+      
+      --card-radius: 10px;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background-color: var(--bg-primary);
+      color: var(--text-main);
+      font-family: 'Inter', sans-serif;
+      line-height: 1.5;
+      padding: 20px;
+      min-height: 100vh;
+    }
+
+    code, pre, .mono {
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding-bottom: 18px;
+      margin-bottom: 20px;
+      border-bottom: 1px solid var(--border-color);
+      flex-wrap: wrap;
+      gap: 15px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .brand-icon {
+      background: linear-gradient(135deg, #2563eb, #9333ea);
+      width: 40px;
+      height: 40px;
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 20px;
+      box-shadow: 0 0 15px rgba(37, 99, 235, 0.4);
+    }
+
+    .brand-title h1 {
+      font-size: 1.25rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+
+    .brand-title p {
+      font-size: 0.8rem;
+      color: var(--text-muted);
+    }
+
+    .header-meta {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .live-badge {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(16, 185, 129, 0.15);
+      color: #34d399;
+      padding: 4px 10px;
+      border-radius: 9999px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      border: 1px solid rgba(16, 185, 129, 0.3);
+    }
+
+    .live-pulse {
+      width: 8px;
+      height: 8px;
+      background: #34d399;
+      border-radius: 50%;
+      animation: pulse 1.8s infinite;
+    }
+
+    @keyframes pulse {
+      0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.7); }
+      70% { transform: scale(1.1); box-shadow: 0 0 0 6px rgba(52, 211, 153, 0); }
+      100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(52, 211, 153, 0); }
+    }
+
+    .clock-tag {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      padding: 5px 12px;
+      border-radius: 6px;
+      font-size: 0.82rem;
+      color: var(--accent-blue);
+    }
+
+    /* Scenario Bar */
+    .scenario-bar {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-color);
+      border-radius: var(--card-radius);
+      padding: 12px 16px;
+      margin-bottom: 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+
+    .scenario-label {
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .scenario-buttons {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .btn-scenario {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      color: var(--text-main);
+      padding: 6px 12px;
+      border-radius: 6px;
+      font-size: 0.8rem;
+      cursor: pointer;
+      font-weight: 500;
+      transition: all 0.2s;
+    }
+
+    .btn-scenario:hover {
+      background: var(--bg-card-hover);
+      border-color: var(--accent-blue);
+      color: var(--accent-blue);
+    }
+
+    .btn-scenario.active {
+      background: var(--accent-blue-dim);
+      border-color: var(--accent-blue);
+      color: var(--accent-blue);
+      font-weight: 600;
+    }
+
+    /* Grid Layouts */
+    .grid-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+      margin-bottom: 20px;
+    }
+
+    .grid-3 {
+      display: grid;
+      grid-template-columns: 1.1fr 1fr 1.1fr;
+      gap: 20px;
+      margin-bottom: 20px;
+    }
+
+    @media (max-width: 1080px) {
+      .grid-2, .grid-3 {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    /* Cards */
+    .card {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-color);
+      border-radius: var(--card-radius);
+      padding: 18px;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 14px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+      padding-bottom: 10px;
+    }
+
+    .card-title {
+      font-size: 0.95rem;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .card-title .icon {
+      font-size: 1.1rem;
+    }
+
+    /* Form Inputs */
+    .form-group {
+      margin-bottom: 12px;
+    }
+
+    .form-group label {
+      display: block;
+      font-size: 0.78rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      margin-bottom: 5px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .input-row {
+      display: flex;
+      gap: 8px;
+    }
+
+    input[type="text"], textarea {
+      width: 100%;
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      padding: 8px 12px;
+      color: var(--text-main);
+      font-size: 0.88rem;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+
+    input[type="text"]:focus, textarea:focus {
+      border-color: var(--border-focus);
+    }
+
+    textarea {
+      resize: vertical;
+      min-height: 80px;
+      line-height: 1.4;
+    }
+
+    /* Buttons */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      color: var(--text-main);
+      padding: 8px 14px;
+      border-radius: 6px;
+      font-size: 0.85rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+      white-space: nowrap;
+    }
+
+    .btn:hover {
+      background: var(--bg-card-hover);
+    }
+
+    .btn-primary {
+      background: #2563eb;
+      border-color: #3b82f6;
+      color: #fff;
+    }
+
+    .btn-primary:hover {
+      background: #1d4ed8;
+    }
+
+    .btn-mic {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      color: var(--text-main);
+      padding: 8px 12px;
+    }
+
+    .btn-mic.recording {
+      background: rgba(239, 68, 68, 0.2);
+      border-color: #ef4444;
+      color: #f87171;
+      animation: pulse-red 1.2s infinite;
+    }
+
+    @keyframes pulse-red {
+      0% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.5); }
+      70% { box-shadow: 0 0 0 6px rgba(239, 68, 68, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+    }
+
+    .btn-approve {
+      background: rgba(16, 185, 129, 0.2);
+      border-color: #10b981;
+      color: #34d399;
+    }
+
+    .btn-approve:hover {
+      background: rgba(16, 185, 129, 0.35);
+    }
+
+    .btn-reject {
+      background: rgba(239, 68, 68, 0.2);
+      border-color: #ef4444;
+      color: #f87171;
+    }
+
+    .btn-reject:hover {
+      background: rgba(239, 68, 68, 0.35);
+    }
+
+    .btn-retry {
+      background: rgba(245, 158, 11, 0.2);
+      border-color: #f59e0b;
+      color: #fbbf24;
+    }
+
+    .btn-retry:hover {
+      background: rgba(245, 158, 11, 0.35);
+    }
+
+    /* Status Badges */
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 14px;
+      border-radius: 9999px;
+      font-size: 0.82rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .status-badge.DEGRADED {
+      background: var(--status-degraded-bg);
+      color: var(--status-degraded);
+      border: 1px solid rgba(239, 68, 68, 0.4);
+    }
+
+    .status-badge.UNCERTAIN {
+      background: var(--status-uncertain-bg);
+      color: var(--status-uncertain);
+      border: 1px solid rgba(245, 158, 11, 0.4);
+    }
+
+    .status-badge.RECOVERED {
+      background: var(--status-recovered-bg);
+      color: var(--status-recovered);
+      border: 1px solid rgba(16, 185, 129, 0.4);
+    }
+
+    /* Voice Brief Panel */
+    .voice-brief-box {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 14px;
+      font-size: 0.88rem;
+      line-height: 1.6;
+      color: #e2e8f0;
+      margin-bottom: 12px;
+      position: relative;
+      max-height: 200px;
+      overflow-y: auto;
+    }
+
+    .voice-controls {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+
+    .voice-controls-left {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .wave-anim {
+      display: none;
+      align-items: center;
+      gap: 3px;
+      height: 18px;
+    }
+
+    .wave-anim.active {
+      display: flex;
+    }
+
+    .wave-bar {
+      width: 3px;
+      background: var(--accent-blue);
+      border-radius: 2px;
+      animation: wave 0.8s infinite ease-in-out;
+    }
+
+    .wave-bar:nth-child(2) { animation-delay: 0.2s; height: 14px; }
+    .wave-bar:nth-child(3) { animation-delay: 0.4s; height: 18px; }
+    .wave-bar:nth-child(4) { animation-delay: 0.1s; height: 10px; }
+
+    @keyframes wave {
+      0%, 100% { height: 4px; }
+      50% { height: 16px; }
+    }
+
+    /* Tables */
+    .table-container {
+      overflow-x: auto;
+      margin-top: 10px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.82rem;
+      text-align: left;
+    }
+
+    th {
+      background: var(--bg-card);
+      color: var(--text-muted);
+      font-weight: 600;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--border-color);
+      white-space: nowrap;
+    }
+
+    td {
+      padding: 10px 12px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+      vertical-align: middle;
+    }
+
+    tr:hover td {
+      background: rgba(255, 255, 255, 0.02);
+    }
+
+    .tag {
+      display: inline-block;
+      padding: 2px 7px;
+      border-radius: 4px;
+      font-size: 0.72rem;
+      font-weight: 600;
+    }
+
+    .tag-blue { background: rgba(56, 189, 248, 0.15); color: #38bdf8; }
+    .tag-amber { background: rgba(245, 158, 11, 0.15); color: #fbbf24; }
+    .tag-red { background: rgba(239, 68, 68, 0.15); color: #f87171; }
+    .tag-green { background: rgba(16, 185, 129, 0.15); color: #34d399; }
+    .tag-purple { background: rgba(192, 132, 252, 0.15); color: #c084fc; }
+
+    /* Channel Feed */
+    .channel-box {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 12px;
+      height: 280px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .post-card {
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      padding: 12px;
+      font-size: 0.82rem;
+      position: relative;
+    }
+
+    .post-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 8px;
+      font-size: 0.75rem;
+      color: var(--text-muted);
+    }
+
+    .post-body {
+      white-space: pre-wrap;
+      line-height: 1.45;
+      color: #cbd5e1;
+    }
+
+    .post-body strong {
+      color: #f1f5f9;
+    }
+
+    /* Verification Checks */
+    .check-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .check-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      padding: 10px 14px;
+      font-size: 0.82rem;
+    }
+
+    .check-card-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+
+    .check-meta {
+      font-size: 0.74rem;
+      color: var(--text-muted);
+      margin-top: 4px;
+      line-height: 1.35;
+    }
+
+    /* Notification banner */
+    .banner {
+      padding: 10px 14px;
+      border-radius: 6px;
+      font-size: 0.84rem;
+      margin-bottom: 14px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .banner-warning {
+      background: rgba(245, 158, 11, 0.15);
+      border: 1px solid rgba(245, 158, 11, 0.3);
+      color: #fbbf24;
+    }
+
+    .banner-info {
+      background: rgba(56, 189, 248, 0.15);
+      border: 1px solid rgba(56, 189, 248, 0.3);
+      color: #38bdf8;
+    }
+
+    .banner-success {
+      background: rgba(16, 185, 129, 0.15);
+      border: 1px solid rgba(16, 185, 129, 0.3);
+      color: #34d399;
+    }
+
+    /* Claims list */
+    .claims-grid {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      max-height: 220px;
+      overflow-y: auto;
+    }
+
+    .claim-row {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      padding: 8px 12px;
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      font-size: 0.82rem;
+    }
+
+    .claim-id-badge {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.72rem;
+      font-weight: 700;
+      background: #1e293b;
+      color: var(--accent-blue);
+      border: 1px solid #334155;
+      padding: 2px 6px;
+      border-radius: 4px;
+      white-space: nowrap;
+    }
+
+    .claim-content {
+      flex: 1;
+    }
+
+    .claim-links {
+      margin-top: 3px;
+      font-size: 0.74rem;
+      color: var(--text-dim);
+    }
+
+    .claim-links a {
+      color: var(--accent-blue);
+      text-decoration: none;
+    }
+
+    .claim-links a:hover {
+      text-decoration: underline;
+    }
+
+    /* Dictation indicator */
+    .dictation-status {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.74rem;
+      color: var(--text-dim);
+      margin-top: 4px;
+    }
+
+    .dictation-status.active {
+      color: #f87171;
+      font-weight: 600;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Top Header -->
+  <header>
+    <div class="brand">
+      <div class="brand-icon">🎙️</div>
+      <div class="brand-title">
+        <h1>Incident Voice Status Reporter</h1>
+        <p>Operational on-call agent • Dashboard claims verification • Safe PII redaction • Human approval gate</p>
+      </div>
+    </div>
+    <div class="header-meta">
+      <span class="live-badge"><span class="live-pulse"></span> SYSTEM READY</span>
+      <span class="clock-tag mono" id="liveClock">--:--:-- UTC</span>
+    </div>
+  </header>
+
+  <!-- Quick Scenario Selector -->
+  <div class="scenario-bar">
+    <div class="scenario-label">
+      <span>⚡ Quick Scenarios (Official Test Cases):</span>
+    </div>
+    <div class="scenario-buttons">
+      <button class="btn-scenario active" onclick="loadScenario('TC1')">TC1: Status Update</button>
+      <button class="btn-scenario" onclick="loadScenario('TC2')">TC2: Cached Dashboard</button>
+      <button class="btn-scenario" onclick="loadScenario('TC3')">TC3: Customer Data in Logs</button>
+      <button class="btn-scenario" onclick="loadScenario('TC4')">TC4: Health Check Failing</button>
+      <button class="btn-scenario" onclick="loadScenario('RECOVERED')">System Recovered</button>
+    </div>
+  </div>
+
+  <!-- Row 1: Incident Inputs & Voice Brief -->
+  <div class="grid-2">
+    <!-- Left: Incident Input & Voice Dictation -->
+    <div class="card">
+      <div class="card-header">
+        <div class="card-title"><span class="icon">📝</span> 1. Incident Scope & Monitoring Sources</div>
+        <button class="btn" style="padding: 4px 8px; font-size: 0.75rem;" onclick="generateNewIncidentId()">New ID</button>
+      </div>
+
+      <div class="form-group">
+        <label>Incident Identifier (Stable ID)</label>
+        <input type="text" id="incidentId" class="mono" value="INC-20261019-01" placeholder="e.g. INC-20261019-01">
+      </div>
+
+      <div class="form-group">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:5px;">
+          <label style="margin-bottom:0;">Incident Scope (Type or Dictate)</label>
+          <div class="dictation-status" id="dictationStatus">SpeechRecognition: Ready</div>
+        </div>
+        <div class="input-row">
+          <textarea id="scopeInput" placeholder="Describe the incident scope, affected services, and symptoms..."></textarea>
+          <button class="btn btn-mic" id="micBtn" onclick="toggleDictation()" title="Dictate scope using browser Web Speech API">
+            🎙️ <span id="micBtnText">Dictate</span>
+          </button>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label>Dashboards & Health Probes (One per line)</label>
+        <textarea id="dashboardsInput" style="min-height: 60px;" class="mono"></textarea>
+      </div>
+
+      <div style="display: flex; gap: 10px; margin-top: auto;">
+        <button class="btn btn-primary" style="flex: 1;" onclick="runCollectorAndAnalysis()">
+          ⚡ Collect Signals & Plan Voice Brief
+        </button>
+      </div>
+    </div>
+
+    <!-- Right: Generated Voice Brief & Status Badge -->
+    <div class="card">
+      <div class="card-header">
+        <div class="card-title"><span class="icon">🔊</span> 2. Voice Brief & Status Decision</div>
+        <div id="statusBadgeContainer">
+          <span class="status-badge UNCERTAIN">AWAITING RUN</span>
+        </div>
+      </div>
+
+      <div id="uncertaintyAlert"></div>
+
+      <label style="font-size: 0.75rem; text-transform: uppercase; color: var(--text-muted); font-weight: 600; margin-bottom: 6px;">
+        Voice Update Script (Synchronized with Audio)
+      </label>
+      <div class="voice-brief-box" id="voiceScriptBox">
+        Click "Collect Signals & Plan Voice Brief" to generate the voice brief and correlate fresh telemetry signals...
+      </div>
+
+      <div class="voice-controls">
+        <div class="voice-controls-left">
+          <button class="btn" id="btnSpeak" onclick="playVoiceBrief()" disabled>
+            <span>🔊 Read Aloud</span>
+          </button>
+          <button class="btn" id="btnStopSpeak" onclick="stopVoiceBrief()" disabled>
+            <span>⏹️ Stop</span>
+          </button>
+          <div class="wave-anim" id="waveAnim">
+            <span class="wave-bar"></span>
+            <span class="wave-bar"></span>
+            <span class="wave-bar"></span>
+            <span class="wave-bar"></span>
+          </div>
+        </div>
+
+        <div style="display: flex; align-items: center; gap: 8px; font-size: 0.75rem; color: var(--text-muted);">
+          <span>Speech Rate:</span>
+          <select id="voiceRate" style="background:var(--bg-card); color:var(--text-main); border:1px solid var(--border-color); border-radius:4px; padding:3px 6px;">
+            <option value="0.9">0.9x</option>
+            <option value="1.0" selected>1.0x (Normal)</option>
+            <option value="1.15">1.15x (Fast)</option>
+          </select>
+        </div>
+      </div>
+
+      <div style="margin-top: 14px; font-size: 0.75rem; color: var(--text-dim); border-top: 1px solid rgba(255,255,255,0.06); padding-top: 8px;">
+        <strong>Decision Reason:</strong> <span id="decisionReasonText">Not evaluated yet.</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Row 2: Evidence Table & Claims Traceability Matrix -->
+  <div class="grid-2">
+    <!-- Left: Telemetry Evidence Table -->
+    <div class="card">
+      <div class="card-header">
+        <div class="card-title"><span class="icon">📊</span> Extracted Telemetry Evidence (Sources & Freshness)</div>
+        <span class="tag tag-blue" id="evidenceCountTag">0 Signals</span>
+      </div>
+      <div class="table-container">
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Type</th>
+              <th>Name</th>
+              <th>Extracted Value</th>
+              <th>Source Updated</th>
+              <th>Age</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody id="evidenceTableBody">
+            <tr><td colspan="7" style="text-align:center; color:var(--text-dim); padding:20px;">No telemetry collected yet.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Right: Claims-to-Dashboard Traceability -->
+    <div class="card">
+      <div class="card-header">
+        <div class="card-title"><span class="icon">🔗</span> Claims-to-Dashboard Traceability Matrix</div>
+        <span class="tag tag-purple">Step 5: Verified Links</span>
+      </div>
+      <p style="font-size: 0.78rem; color: var(--text-muted); margin-bottom: 10px;">
+        Every claim made in the voice brief and channel post is mapped directly to a source dashboard ID:
+      </p>
+      <div class="claims-grid" id="claimsContainer">
+        <div style="text-align:center; color:var(--text-dim); padding:20px;">Claims will appear once telemetry is processed.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Row 3: Human Approval, Live Mock Channel, and Independent Verification -->
+  <div class="grid-3">
+    <!-- 1. Human Approval Gate -->
+    <div class="card">
+      <div class="card-header">
+        <div class="card-title"><span class="icon">🛡️</span> 3. Human Approval Gate</div>
+        <span class="tag tag-amber" id="approvalStateTag">Pending Review</span>
+      </div>
+      <p style="font-size: 0.76rem; color: var(--text-muted); margin-bottom: 10px;">
+        <strong>Destination:</strong> <span class="mono" id="postDestination">#incident-response</span>
+      </p>
+      <div class="form-group">
+        <label>Proposed Channel Update (Exact Content)</label>
+        <textarea id="proposedPostText" style="height: 140px; font-size: 0.78rem; line-height: 1.4;" class="mono" readonly></textarea>
+      </div>
+
+      <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+        <button class="btn btn-approve" id="btnApprove" onclick="submitApproval('APPROVED')" disabled>
+          ✅ Approve & Post
+        </button>
+        <button class="btn btn-reject" id="btnReject" onclick="submitApproval('REJECTED')" disabled>
+          ❌ Reject
+        </button>
+        <button class="btn btn-retry" id="btnRetry" onclick="testDuplicateRetry()" disabled title="Test duplicate suppression on retries">
+          🔄 Retry (Test Idempotency)
+        </button>
+      </div>
+      <div id="idempotencyNotice" style="margin-top: 10px; font-size: 0.75rem;"></div>
+    </div>
+
+    <!-- 2. Mock Team Channel Feed -->
+    <div class="card">
+      <div class="card-header">
+        <div class="card-title"><span class="icon">💬</span> Mock Channel (<span class="mono">#incident-response</span>)</div>
+        <button class="btn" style="padding: 3px 6px; font-size: 0.72rem;" onclick="clearChannelFeed()">Clear</button>
+      </div>
+      <div class="channel-box" id="channelFeedBox">
+        <div style="text-align:center; color:var(--text-dim); margin-top: auto; margin-bottom: auto;">
+          No channel messages yet.<br>Approve an update to publish.
+        </div>
+      </div>
+    </div>
+
+    <!-- 3. Independent Verification Engine -->
+    <div class="card">
+      <div class="card-header">
+        <div class="card-title"><span class="icon">✅</span> 4. Independent Verification</div>
+        <span class="tag tag-blue" id="verificationStateTag">Awaiting Post</span>
+      </div>
+      <p style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 10px;">
+        Re-reads the channel after posting and strictly verifies fidelity, dashboard links, and zero PII leaks:
+      </p>
+      <div class="check-list" id="verificationChecksBox">
+        <div class="check-card">
+          <div class="check-card-head"><span>1. Post Existence</span> <span class="tag tag-amber">PENDING</span></div>
+          <div class="check-meta">Awaiting channel publication.</div>
+        </div>
+        <div class="check-card">
+          <div class="check-card-head"><span>2. Content Fidelity</span> <span class="tag tag-amber">PENDING</span></div>
+          <div class="check-meta">Strict character-for-character check against approved text.</div>
+        </div>
+        <div class="check-card">
+          <div class="check-card-head"><span>3. Dashboard Linkage</span> <span class="tag tag-amber">PENDING</span></div>
+          <div class="check-meta">Every claim cites verified [SIG-xxx] identifier.</div>
+        </div>
+        <div class="check-card">
+          <div class="check-card-head"><span>4. Customer Data Shield</span> <span class="tag tag-amber">PENDING</span></div>
+          <div class="check-meta">Zero unredacted emails, phone numbers, or card numbers.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Row 4: Official Test Cases Runner & Verification Matrix -->
+  <div class="card" style="margin-bottom: 30px;">
+    <div class="card-header">
+      <div class="card-title"><span class="icon">🧪</span> Official Test Cases Matrix (TC1 — TC4)</div>
+      <button class="btn btn-primary" onclick="runOfficialTestCases()">
+        ▶️ Run All Official Test Cases
+      </button>
+    </div>
+    <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 12px;">
+      Executes each official scenario, preserves inputs, expected results, actual results, and evidence, and explains failures/differences.
+    </p>
+    <div class="table-container">
+      <table>
+        <thead>
+          <tr>
+            <th>Test Case</th>
+            <th>Scenario</th>
+            <th>Expected Result</th>
+            <th>Actual Result</th>
+            <th>Evidence Status</th>
+            <th>Outcome</th>
+            <th>Traceable Explanation</th>
+          </tr>
+        </thead>
+        <tbody id="testMatrixBody">
+          <tr>
+            <td class="mono"><strong>TC1</strong></td>
+            <td>Status update</td>
+            <td>Includes timestamps and links each claim to dashboard ID</td>
+            <td style="color:var(--text-dim);">Not run yet</td>
+            <td><span class="tag">Pending</span></td>
+            <td><span class="tag">READY</span></td>
+            <td style="color:var(--text-dim);">Click 'Run All Official Test Cases' to execute suite.</td>
+          </tr>
+          <tr>
+            <td class="mono"><strong>TC2</strong></td>
+            <td>Cached dashboard</td>
+            <td>Not proof of recovery (state UNCERTAIN)</td>
+            <td style="color:var(--text-dim);">Not run yet</td>
+            <td><span class="tag">Pending</span></td>
+            <td><span class="tag">READY</span></td>
+            <td style="color:var(--text-dim);">Click 'Run All Official Test Cases' to execute suite.</td>
+          </tr>
+          <tr>
+            <td class="mono"><strong>TC3</strong></td>
+            <td>Customer data in logs</td>
+            <td>Redacted (emails, phones, card numbers replaced with [REDACTED_*])</td>
+            <td style="color:var(--text-dim);">Not run yet</td>
+            <td><span class="tag">Pending</span></td>
+            <td><span class="tag">READY</span></td>
+            <td style="color:var(--text-dim);">Click 'Run All Official Test Cases' to execute suite.</td>
+          </tr>
+          <tr>
+            <td class="mono"><strong>TC4</strong></td>
+            <td>Health check failing</td>
+            <td>Recovery uncertain (state UNCERTAIN)</td>
+            <td style="color:var(--text-dim);">Not run yet</td>
+            <td><span class="tag">Pending</span></td>
+            <td><span class="tag">READY</span></td>
+            <td style="color:var(--text-dim);">Click 'Run All Official Test Cases' to execute suite.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <script>
+    // Global State
+    let currentScenario = 'TC1';
+    let currentIncidentId = 'INC-20261019-01';
+    let currentAnalysisData = null;
+    let isDictating = false;
+    let speechRecognitionInstance = null;
+    let currentSpeakingUtterance = null;
+    let lastPostedId = null;
+
+    // Clock
+    function updateClock() {
+      const now = new Date();
+      const utcString = now.toUTCString().split(' ')[4] + ' UTC';
+      document.getElementById('liveClock').textContent = utcString;
+    }
+    setInterval(updateClock, 1000);
+    updateClock();
+
+    // Generate Incident ID
+    function generateNewIncidentId() {
+      const rand = Math.floor(1000 + Math.random() * 9000);
+      const today = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+      currentIncidentId = `INC-${today}-${rand}`;
+      document.getElementById('incidentId').value = currentIncidentId;
+    }
+
+    // Scenarios Setup
+    const scenarioPresets = {
+      'TC1': {
+        scope: "Checkout service experiencing elevated 500 error rates and latency degradation across US-East.",
+        dashboards: [
+          "https://grafana.internal.mock/d/checkout-metrics",
+          "https://status.mockcloud.io/services/checkout",
+          "https://api.internal.mock/health/db"
+        ]
+      },
+      'TC2': {
+        scope: "Evaluating recovery claims for checkout gateway after proxy restart.",
+        dashboards: [
+          "https://grafana.internal.mock/d/checkout-metrics",
+          "https://status.mockcloud.io/services/checkout"
+        ]
+      },
+      'TC3': {
+        scope: "Investigating failed customer transactions and payment exceptions in logs.",
+        dashboards: [
+          "https://grafana.internal.mock/d/checkout-metrics",
+          "https://logs.internal.mock/explorer"
+        ]
+      },
+      'TC4': {
+        scope: "Verifying post-failover stability for Core API cluster.",
+        dashboards: [
+          "https://grafana.internal.mock/d/checkout-metrics",
+          "https://api.internal.mock/health/db",
+          "https://status.mockcloud.io/services/checkout"
+        ]
+      },
+      'RECOVERED': {
+        scope: "Post-mitigation checkout and database cluster verification.",
+        dashboards: [
+          "https://grafana.internal.mock/d/checkout-metrics",
+          "https://status.mockcloud.io/services/checkout",
+          "https://api.internal.mock/health/db"
+        ]
+      }
+    };
+
+    function loadScenario(scenarioId) {
+      currentScenario = scenarioId;
+      document.querySelectorAll('.btn-scenario').forEach(b => {
+        b.classList.remove('active');
+        if (b.textContent.includes(scenarioId)) b.classList.add('active');
+      });
+
+      const preset = scenarioPresets[scenarioId];
+      if (preset) {
+        document.getElementById('scopeInput').value = preset.scope;
+        document.getElementById('dashboardsInput').value = preset.dashboards.join('\n');
+      }
+
+      // Reset action states
+      document.getElementById('idempotencyNotice').innerHTML = '';
+      document.getElementById('btnApprove').disabled = true;
+      document.getElementById('btnReject').disabled = true;
+      document.getElementById('btnRetry').disabled = true;
+      document.getElementById('approvalStateTag').className = 'tag tag-amber';
+      document.getElementById('approvalStateTag').textContent = 'Pending Review';
+      document.getElementById('verificationStateTag').className = 'tag tag-blue';
+      document.getElementById('verificationStateTag').textContent = 'Awaiting Post';
+    }
+
+    // Initialize Web Speech API for Dictation
+    function initSpeechRecognition() {
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (SpeechRecognition) {
+        speechRecognitionInstance = new SpeechRecognition();
+        speechRecognitionInstance.continuous = true;
+        speechRecognitionInstance.interimResults = true;
+        speechRecognitionInstance.lang = 'en-US';
+
+        speechRecognitionInstance.onresult = (event) => {
+          let transcript = '';
+          for (let i = event.resultIndex; i < event.results.length; ++i) {
+            transcript += event.results[i][0].transcript;
+          }
+          const scopeEl = document.getElementById('scopeInput');
+          scopeEl.value = (scopeEl.value ? scopeEl.value + ' ' : '') + transcript;
+        };
+
+        speechRecognitionInstance.onerror = (event) => {
+          console.warn('Speech recognition error:', event.error);
+          stopDictation();
+        };
+
+        speechRecognitionInstance.onend = () => {
+          if (isDictating) stopDictation();
+        };
+      } else {
+        document.getElementById('dictationStatus').textContent = 'Web Speech STT: Not supported in browser (typing enabled)';
+      }
+    }
+
+    function toggleDictation() {
+      if (!speechRecognitionInstance) {
+        alert('Web Speech API is not supported in this browser environment. You can type or paste the scope directly.');
+        return;
+      }
+      if (isDictating) {
+        stopDictation();
+      } else {
+        startDictation();
+      }
+    }
+
+    function startDictation() {
+      try {
+        speechRecognitionInstance.start();
+        isDictating = true;
+        const micBtn = document.getElementById('micBtn');
+        micBtn.classList.add('recording');
+        document.getElementById('micBtnText').textContent = 'Listening...';
+        const st = document.getElementById('dictationStatus');
+        st.textContent = '🎙️ Listening... (speak now)';
+        st.classList.add('active');
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    function stopDictation() {
+      try {
+        if (speechRecognitionInstance) speechRecognitionInstance.stop();
+      } catch (e) {}
+      isDictating = false;
+      const micBtn = document.getElementById('micBtn');
+      micBtn.classList.remove('recording');
+      document.getElementById('micBtnText').textContent = 'Dictate';
+      const st = document.getElementById('dictationStatus');
+      st.textContent = 'SpeechRecognition: Ready';
+      st.classList.remove('active');
+    }
+
+    // Run Collector & Analysis
+    async function runCollectorAndAnalysis() {
+      const incId = document.getElementById('incidentId').value.trim() || 'INC-20261019-01';
+      const scope = document.getElementById('scopeInput').value.trim();
+      const dashboards = document.getElementById('dashboardsInput').value.split('\n').map(s => s.trim()).filter(Boolean);
+
+      if (!scope) {
+        alert('Please enter an incident scope before running analysis.');
+        return;
+      }
+
+      try {
+        const res = await fetch('/api/collect-and-analyze', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            incident_id: incId,
+            scope: scope,
+            dashboards: dashboards,
+            scenario_id: currentScenario
+          })
+        });
+
+        if (!res.ok) throw new Error(await res.text());
+        const data = await res.json();
+        currentAnalysisData = data;
+
+        renderAnalysisResults(data);
+      } catch (err) {
+        alert('Error collecting telemetry: ' + err.message);
+      }
+    }
+
+    function renderAnalysisResults(data) {
+      const { collection, decision, brief } = data;
+
+      // 1. Status Badge
+      const statusBadgeContainer = document.getElementById('statusBadgeContainer');
+      statusBadgeContainer.innerHTML = `<span class="status-badge ${decision.status}">${decision.status}</span>`;
+
+      // 2. Uncertainty Alert Banner
+      const alertEl = document.getElementById('uncertaintyAlert');
+      if (decision.cached_warning) {
+        alertEl.innerHTML = `<div class="banner banner-warning">⚠️ <strong>Cached Dashboard Warning:</strong> ${decision.reason} <em>This is not proof of recovery.</em></div>`;
+      } else if (decision.recovery_uncertain_warning) {
+        alertEl.innerHTML = `<div class="banner banner-warning">⚠️ <strong>Health Probe Warning:</strong> ${decision.reason} <em>Recovery uncertain.</em></div>`;
+      } else if (decision.status === 'RECOVERED') {
+        alertEl.innerHTML = `<div class="banner banner-success">✅ <strong>All Probes Healthy:</strong> All signals fresh, error rate ≤ 1%, probes passing.</div>`;
+      } else {
+        alertEl.innerHTML = `<div class="banner banner-info">ℹ️ <strong>Correlated Signals:</strong> ${decision.reason}</div>`;
+      }
+
+      // 3. Voice Brief Text
+      document.getElementById('voiceScriptBox').textContent = brief.voice_script;
+      document.getElementById('decisionReasonText').textContent = decision.reason;
+      document.getElementById('btnSpeak').disabled = false;
+      document.getElementById('btnStopSpeak').disabled = true;
+
+      // 4. Evidence Table
+      const tb = document.getElementById('evidenceTableBody');
+      tb.innerHTML = '';
+      collection.signals.forEach(s => {
+        const row = document.createElement('tr');
+        const statusTag = s.is_cached
+          ? '<span class="tag tag-amber">CACHED</span>'
+          : (s.is_stale ? '<span class="tag tag-red">STALE</span>' : '<span class="tag tag-green">FRESH</span>');
+        
+        row.innerHTML = `
+          <td class="mono"><strong>${s.signal_id}</strong></td>
+          <td><span class="tag tag-blue">${s.source_type}</span></td>
+          <td><a href="${s.url}" target="_blank" style="color:var(--text-main); text-decoration:none;">${s.name}</a></td>
+          <td class="mono"><strong>${s.value} ${s.unit}</strong></td>
+          <td class="mono" style="font-size:0.75rem;">${s.source_updated_at}</td>
+          <td class="mono">${s.age_seconds}s</td>
+          <td>${statusTag}</td>
+        `;
+        tb.appendChild(row);
+      });
+      document.getElementById('evidenceCountTag').textContent = `${collection.signals.length} Signals (${collection.redactions_count} PII Redacted)`;
+
+      // 5. Claims Traceability Matrix
+      const claimsBox = document.getElementById('claimsContainer');
+      claimsBox.innerHTML = '';
+      brief.claims.forEach(clm => {
+        const cdiv = document.createElement('div');
+        cdiv.className = 'claim-row';
+        cdiv.innerHTML = `
+          <div class="claim-id-badge">${clm.signal_id}</div>
+          <div class="claim-content">
+            <div>${clm.claim_text}</div>
+            <div class="claim-links">
+              Source: <a href="${clm.source_url}" target="_blank">${clm.source_name}</a> • 
+              Observed Value: <span class="mono">${clm.extracted_value}</span> • 
+              Updated: <span class="mono">${clm.source_updated_at}</span>
+            </div>
+          </div>
+        `;
+        claimsBox.appendChild(cdiv);
+      });
+
+      // 6. Approval Panel
+      document.getElementById('postDestination').textContent = brief.destination;
+      document.getElementById('proposedPostText').value = brief.proposed_channel_post;
+      document.getElementById('btnApprove').disabled = false;
+      document.getElementById('btnReject').disabled = false;
+      document.getElementById('btnRetry').disabled = true; // Enabled after first approval
+      document.getElementById('approvalStateTag').className = 'tag tag-amber';
+      document.getElementById('approvalStateTag').textContent = 'Pending Operator Approval';
+      document.getElementById('idempotencyNotice').innerHTML = '';
+    }
+
+    // TTS: Read Aloud
+    function playVoiceBrief() {
+      if (!('speechSynthesis' in window)) {
+        alert('Browser Text-to-Speech (speechSynthesis) is not available in this browser.');
+        return;
+      }
+
+      window.speechSynthesis.cancel();
+      const text = document.getElementById('voiceScriptBox').textContent;
+      if (!text) return;
+
+      currentSpeakingUtterance = new SpeechSynthesisUtterance(text);
+      const rateEl = document.getElementById('voiceRate');
+      currentSpeakingUtterance.rate = parseFloat(rateEl.value) || 1.0;
+
+      const wave = document.getElementById('waveAnim');
+      const btnSpeak = document.getElementById('btnSpeak');
+      const btnStop = document.getElementById('btnStopSpeak');
+
+      currentSpeakingUtterance.onstart = () => {
+        wave.classList.add('active');
+        btnSpeak.disabled = true;
+        btnStop.disabled = false;
+      };
+
+      currentSpeakingUtterance.onend = () => {
+        wave.classList.remove('active');
+        btnSpeak.disabled = false;
+        btnStop.disabled = true;
+      };
+
+      currentSpeakingUtterance.onerror = () => {
+        wave.classList.remove('active');
+        btnSpeak.disabled = false;
+        btnStop.disabled = true;
+      };
+
+      window.speechSynthesis.speak(currentSpeakingUtterance);
+    }
+
+    function stopVoiceBrief() {
+      if ('speechSynthesis' in window) {
+        window.speechSynthesis.cancel();
+      }
+      document.getElementById('waveAnim').classList.remove('active');
+      document.getElementById('btnSpeak').disabled = false;
+      document.getElementById('btnStopSpeak').disabled = true;
+    }
+
+    // Human Approval Action
+    async function submitApproval(decision) {
+      if (!currentAnalysisData) return;
+
+      const incId = currentAnalysisData.collection.incident_id;
+      const destination = currentAnalysisData.brief.destination;
+      const message = currentAnalysisData.brief.proposed_channel_post;
+
+      try {
+        const res = await fetch('/api/approve', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            incident_id: incId,
+            destination: destination,
+            message: message,
+            approval_decision: decision
+          })
+        });
+
+        const data = await res.json();
+
+        if (decision === 'REJECTED') {
+          document.getElementById('approvalStateTag').className = 'tag tag-red';
+          document.getElementById('approvalStateTag').textContent = 'Rejected by Operator';
+          document.getElementById('idempotencyNotice').innerHTML = `
+            <div class="banner banner-warning" style="margin-top:8px;">
+              ❌ Update was rejected by operator. Nothing was posted to channel.
+            </div>`;
+          document.getElementById('btnApprove').disabled = true;
+          document.getElementById('btnReject').disabled = true;
+          return;
+        }
+
+        // APPROVED
+        document.getElementById('approvalStateTag').className = 'tag tag-green';
+        document.getElementById('approvalStateTag').textContent = 'Approved & Posted';
+        lastPostedId = data.post_id;
+        document.getElementById('btnRetry').disabled = false;
+
+        document.getElementById('idempotencyNotice').innerHTML = `
+          <div class="banner banner-success" style="margin-top:8px;">
+            ✅ <strong>Posted!</strong> Idempotency key: <code class="mono" style="font-size:0.72rem;">${data.idempotency_key.substring(0, 16)}...</code>
+          </div>`;
+
+        // Refresh Mock Channel Feed
+        await loadChannelFeed();
+
+        // Run Independent Verification
+        await runVerification(incId, message, data.post_id);
+
+      } catch (err) {
+        alert('Approval execution error: ' + err.message);
+      }
+    }
+
+    // Test Duplicate Post Suppression (Idempotency)
+    async function testDuplicateRetry() {
+      if (!currentAnalysisData) return;
+      const incId = currentAnalysisData.collection.incident_id;
+      const destination = currentAnalysisData.brief.destination;
+      const message = currentAnalysisData.brief.proposed_channel_post;
+
+      const res = await fetch('/api/approve', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          incident_id: incId,
+          destination: destination,
+          message: message,
+          approval_decision: 'APPROVED'
+        })
+      });
+
+      const data = await res.json();
+      const notice = document.getElementById('idempotencyNotice');
+
+      if (data.is_duplicate) {
+        notice.innerHTML = `
+          <div class="banner banner-warning" style="margin-top:8px;">
+            🛡️ <strong>Duplicate Ignored!</strong> Idempotency key match: <code>${data.idempotency_key.substring(0, 16)}...</code>.<br>
+            Channel feed was NOT duplicated. Original post ID #${data.post_id} preserved.
+          </div>`;
+      } else {
+        notice.innerHTML = `<div class="banner banner-info" style="margin-top:8px;">Post executed (ID #${data.post_id})</div>`;
+      }
+      await loadChannelFeed();
+    }
+
+    // Load Channel Feed
+    async function loadChannelFeed() {
+      try {
+        const res = await fetch('/api/channel');
+        const posts = await res.json();
+        const box = document.getElementById('channelFeedBox');
+        if (!posts || posts.length === 0) {
+          box.innerHTML = '<div style="text-align:center; color:var(--text-dim); margin-top:auto; margin-bottom:auto;">No channel messages yet.<br>Approve an update to publish.</div>';
+          return;
+        }
+
+        box.innerHTML = '';
+        posts.forEach(p => {
+          const card = document.createElement('div');
+          card.className = 'post-card';
+          card.innerHTML = `
+            <div class="post-header">
+              <span><strong>🤖 Incident Voice Bot</strong> in <span class="mono">${p.destination}</span></span>
+              <span class="mono">${p.posted_at}</span>
+            </div>
+            <div class="post-body">${escapeHtml(p.message)}</div>
+            <div style="margin-top:8px; font-size:0.7rem; color:var(--text-dim);">
+              Idempotency Key: <code class="mono">${p.idempotency_key.substring(0, 20)}...</code>
+            </div>
+          `;
+          box.appendChild(card);
+        });
+      } catch (err) {
+        console.error('Error fetching channel feed:', err);
+      }
+    }
+
+    async function clearChannelFeed() {
+      await fetch('/api/reset-channel', { method: 'POST' });
+      await loadChannelFeed();
+      document.getElementById('verificationStateTag').className = 'tag tag-blue';
+      document.getElementById('verificationStateTag').textContent = 'Awaiting Post';
+      document.getElementById('idempotencyNotice').innerHTML = '';
+    }
+
+    // Independent Verification
+    async function runVerification(incidentId, approvedText, postId) {
+      try {
+        const res = await fetch('/api/verify', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            incident_id: incidentId,
+            approved_text: approvedText,
+            post_id: postId
+          })
+        });
+
+        const report = await res.json();
+        const tag = document.getElementById('verificationStateTag');
+        if (report.overall_status === 'PASS') {
+          tag.className = 'tag tag-green';
+          tag.textContent = 'VERIFIED (4/4 PASS)';
+        } else {
+          tag.className = 'tag tag-red';
+          tag.textContent = 'VERIFICATION FAILED';
+        }
+
+        const box = document.getElementById('verificationChecksBox');
+        box.innerHTML = '';
+        report.checks.forEach(chk => {
+          const ccard = document.createElement('div');
+          ccard.className = 'check-card';
+          const badgeClass = chk.status === 'PASS' ? 'tag-green' : 'tag-red';
+          ccard.innerHTML = `
+            <div class="check-card-head">
+              <span>${chk.name}</span>
+              <span class="tag ${badgeClass}">${chk.status}</span>
+            </div>
+            <div class="check-meta">
+              <strong>Expected:</strong> ${chk.expected}<br>
+              <strong>Observed:</strong> ${chk.observed}<br>
+              <em>${chk.details}</em>
+            </div>
+          `;
+          box.appendChild(ccard);
+        });
+      } catch (err) {
+        console.error('Verification error:', err);
+      }
+    }
+
+    // Official Test Cases Runner
+    async function runOfficialTestCases() {
+      const tb = document.getElementById('testMatrixBody');
+      tb.innerHTML = `<tr><td colspan="7" style="text-align:center; padding:20px; color:var(--accent-blue);">Running official test cases TC1 through TC4...</td></tr>`;
+
+      try {
+        const res = await fetch('/api/run-tests', { method: 'POST' });
+        const data = await res.json();
+        const results = data.results;
+
+        tb.innerHTML = '';
+        results.forEach(r => {
+          const row = document.createElement('tr');
+          const outcomeTag = r.status === 'PASS' ? '<span class="tag tag-green">PASS</span>' : '<span class="tag tag-red">FAIL</span>';
+          row.innerHTML = `
+            <td class="mono"><strong>${r.test_case_id}</strong></td>
+            <td><strong>${r.scenario_name}</strong></td>
+            <td style="font-size:0.78rem;">${r.expected}</td>
+            <td style="font-size:0.78rem;">${r.actual}</td>
+            <td><span class="tag tag-blue">${r.evidence ? r.evidence.length + ' signals' : 'N/A'}</span></td>
+            <td>${outcomeTag}</td>
+            <td style="font-size:0.78rem; color:#cbd5e1;">${r.explanation}</td>
+          `;
+          tb.appendChild(row);
+        });
+      } catch (err) {
+        tb.innerHTML = `<tr><td colspan="7" style="color:#f87171; text-align:center;">Failed to execute test suite: ${err.message}</td></tr>`;
+      }
+    }
+
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+
+    // Startup
+    window.addEventListener('DOMContentLoaded', () => {
+      initSpeechRecognition();
+      loadScenario('TC1');
+      loadChannelFeed();
+    });
+  </script>
+</body>
+</html>
