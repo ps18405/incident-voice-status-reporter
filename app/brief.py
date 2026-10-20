@@ -67,7 +67,7 @@ def build_voice_brief_and_post(
     # Specific uncertainty alerts in speech
     if decision.cached_warning:
         voice_lines.append("Notice: cached dashboard detected. This is not proof of recovery.")
-    elif decision.recovery_uncertain_warning:
+    if decision.recovery_uncertain_warning:
         voice_lines.append("Notice: health check probe is failing. Recovery uncertain.")
 
     # Process claims for every collected signal

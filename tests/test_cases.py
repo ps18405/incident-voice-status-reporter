@@ -26,7 +26,8 @@ from app.channel import (
     reset_mock_channel,
 )
 from app.collector import IncidentInput, SignalCollectionResult, SignalModel, collect_signals
-from app.db import get_all_posts, get_connection, init_db
+from app.agent import run_agent
+from app.db import get_all_posts, get_connection, init_db, record_agent_run
 from app.main import app
 from app.redact import scan_for_unredacted_pii
 from app.rules import evaluate_decision_rules
@@ -393,7 +394,7 @@ def test_idempotency():
 # ---------------------------------------------------------------------------
 # 8. Verification
 # ---------------------------------------------------------------------------
-def test_verification():
+def test_verification(monkeypatch):
     """Verification:
     - the verification result matches the approved text
     - every claim links to a real signal ID
@@ -408,6 +409,9 @@ def test_verification():
     collection = collect_signals(inp, save_to_db=True)
     decision = evaluate_decision_rules(collection, save_to_db=True)
     brief = build_voice_brief_and_post(collection, decision)
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    agent_result = run_agent(collection, decision)
+    record_agent_run(inp.incident_id, agent_result.model_dump())
 
     # Approve and publish
     approve_req = ChannelPostRequest(
@@ -537,7 +541,10 @@ def test_api_smoke_test(client: TestClient):
     res_tests = client.post("/api/run-tests")
     assert res_tests.status_code == 200
     test_results = res_tests.json()["results"]
-    assert len(test_results) == 4
+    assert len(test_results) == 6
+    assert {result["test_case_id"] for result in test_results} >= {
+        "TC1", "TC2", "TC3", "TC4", "MIXED", "MISSING",
+    }
     for tr in test_results:
         assert tr["status"] == "PASS"
 

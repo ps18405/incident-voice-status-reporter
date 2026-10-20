@@ -1,5 +1,6 @@
 # Secrets
 .env
+data/llm_recordings.json
 
 # Databases
 *.db

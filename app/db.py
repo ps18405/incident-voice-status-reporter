@@ -94,6 +94,33 @@ CREATE TABLE IF NOT EXISTS test_runs (
     explanation TEXT,
     run_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS agent_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    incident_id TEXT NOT NULL,
+    mode TEXT NOT NULL,
+    model TEXT NOT NULL,
+    steps INTEGER NOT NULL,
+    guardrail_verdict TEXT NOT NULL,
+    guardrail_reasons TEXT NOT NULL,
+    state TEXT NOT NULL,
+    latency_ms REAL NOT NULL,
+    token_usage TEXT NOT NULL,
+    report_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS agent_trace (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL,
+    step INTEGER NOT NULL,
+    thought_summary TEXT NOT NULL,
+    tool_name TEXT,
+    arguments_json TEXT NOT NULL,
+    observation_json TEXT NOT NULL,
+    latency_ms REAL NOT NULL,
+    FOREIGN KEY (run_id) REFERENCES agent_runs (id)
+);
 """
 
 
@@ -115,10 +142,7 @@ def ensure_tables_exist(conn: sqlite.Connection) -> None:
 
 def get_connection(db_path: Optional[Path] = None) -> sqlite3.Connection:
     target_path = Path(db_path or DB_PATH or get_default_db_path())
-    try:
-        target_path.parent.mkdir(parents=True, exist_ok=True)
-    except Exception:
-        pass
+    target_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(target_path), check_same_thread=False)
     conn.row_factory = sqlite3.Row
     ensure_tables_exist(conn)
@@ -430,3 +454,125 @@ def get_latest_test_runs(db_path: Optional[Path] = None) -> List[Dict[str, Any]]
     result = [dict(row) for row in rows]
     conn.close()
     return result
+
+
+def record_agent_run(
+    incident_id: str,
+    report: Dict[str, Any],
+    db_path: Optional[Path] = None,
+) -> int:
+    conn = get_connection(db_path)
+    now = datetime.now(timezone.utc).isoformat()
+    trace = report.get("trace", [])
+    with conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO agent_runs (
+                incident_id, mode, model, steps, guardrail_verdict, guardrail_reasons,
+                state, latency_ms, token_usage, report_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                incident_id,
+                report["mode"],
+                report["model"],
+                len(trace),
+                report["guardrail_verdict"],
+                json.dumps(report.get("guardrail_reasons", [])),
+                report["state"],
+                float(report.get("latency_ms", 0)),
+                json.dumps(report.get("token_usage", {})),
+                json.dumps(report, ensure_ascii=True),
+                now,
+            ),
+        )
+        run_id = int(cursor.lastrowid)
+        for item in trace:
+            conn.execute(
+                """
+                INSERT INTO agent_trace (
+                    run_id, step, thought_summary, tool_name, arguments_json,
+                    observation_json, latency_ms
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    run_id,
+                    int(item.get("step", 0)),
+                    item.get("thought_summary", ""),
+                    item.get("tool_name"),
+                    json.dumps(item.get("arguments", {}), ensure_ascii=True),
+                    json.dumps(item.get("observation", {}), ensure_ascii=True),
+                    float(item.get("latency_ms", 0)),
+                ),
+            )
+    conn.close()
+    return run_id
+
+
+def get_agent_run(run_id: int, db_path: Optional[Path] = None) -> Optional[Dict[str, Any]]:
+    conn = get_connection(db_path)
+    row = conn.execute("SELECT report_json FROM agent_runs WHERE id = ?", (run_id,)).fetchone()
+    conn.close()
+    return json.loads(row["report_json"]) if row else None
+
+
+def update_agent_run_report(
+    run_id: int,
+    fields: Dict[str, Any],
+    db_path: Optional[Path] = None,
+) -> None:
+    conn = get_connection(db_path)
+    row = conn.execute(
+        "SELECT report_json FROM agent_runs WHERE id = ?",
+        (run_id,),
+    ).fetchone()
+    if row is None:
+        conn.close()
+        raise ValueError(f"Agent run {run_id} was not found.")
+    report = json.loads(row["report_json"])
+    report.update(fields)
+    with conn:
+        conn.execute(
+            "UPDATE agent_runs SET report_json = ? WHERE id = ?",
+            (json.dumps(report, ensure_ascii=True), run_id),
+        )
+    conn.close()
+
+
+def get_latest_agent_run_for_incident(
+    incident_id: str,
+    db_path: Optional[Path] = None,
+) -> Optional[Dict[str, Any]]:
+    conn = get_connection(db_path)
+    row = conn.execute(
+        """
+        SELECT report_json
+        FROM agent_runs
+        WHERE incident_id = ?
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (incident_id,),
+    ).fetchone()
+    conn.close()
+    if not row:
+        return None
+    report = json.loads(row["report_json"])
+    return {
+        "guardrail_verdict": report["guardrail_verdict"],
+        "guardrail_reasons": report.get("guardrail_reasons", []),
+        "claims": report.get("claims", []),
+    }
+
+
+def get_approvals_by_incident(
+    incident_id: str,
+    db_path: Optional[Path] = None,
+) -> List[Dict[str, Any]]:
+    conn = get_connection(db_path)
+    rows = conn.execute(
+        "SELECT * FROM approvals WHERE incident_id = ? ORDER BY id DESC",
+        (incident_id,),
+    ).fetchall()
+    conn.close()
+    return [dict(row) for row in rows]

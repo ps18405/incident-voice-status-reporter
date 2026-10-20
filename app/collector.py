@@ -4,7 +4,7 @@ and applies PII redaction before returning.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
@@ -64,7 +64,35 @@ def collect_signals(
 
     # Retrieve mock sources for the requested scenario
     scenario_data = get_mock_scenario_sources(incident_input.scenario_id or "TC1", base_time=retrieval_dt)
-    raw_signals = scenario_data.get("signals", [])
+    raw_signals = list(scenario_data.get("signals", []))
+    if not any(item.get("signal_id") == "SIG-METRIC-SAT" for item in raw_signals):
+        raw_signals.append(
+            {
+                "signal_id": "SIG-METRIC-SAT",
+                "source_type": "metric",
+                "name": "Worker Pool Saturation",
+                "url": "https://grafana.internal.mock/d/checkout-metrics?view=saturation",
+                "value": "72.0",
+                "unit": "%",
+                "source_updated_at": (retrieval_dt).isoformat(),
+                "is_cached": False,
+                "raw_payload": {"metric": "worker_pool_saturation", "threshold": 85, "current": 72.0},
+            }
+        )
+    if not any(item.get("source_type") == "change" for item in raw_signals):
+        raw_signals.append(
+            {
+                "signal_id": "SIG-CHANGE-01",
+                "source_type": "change",
+                "name": "Recent Deployment Summary",
+                "url": "https://changes.internal.mock/deployments/latest",
+                "value": "Synthetic checkout-api v2.4.1 deployment completed 3 minutes ago; causality is unconfirmed.",
+                "unit": "change",
+                "source_updated_at": (retrieval_dt - timedelta(seconds=180)).isoformat(),
+                "is_cached": False,
+                "raw_payload": {"change_count_last_hour": 0},
+            }
+        )
 
     processed_signals: List[SignalModel] = []
     total_redactions = 0
@@ -77,8 +105,8 @@ def collect_signals(
         try:
             upd_dt = datetime.fromisoformat(source_upd.replace("Z", "+00:00"))
             age_sec = max(0.0, (retrieval_dt - upd_dt).total_seconds())
-        except Exception:
-            age_sec = 0.0
+        except (TypeError, ValueError):
+            age_sec = 1_000_000_000.0
 
         is_cached = bool(item.get("is_cached", False))
         is_stale = age_sec > 300.0 or is_cached  # Older than 5 minutes or cached

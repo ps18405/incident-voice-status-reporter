@@ -69,11 +69,11 @@ def get_mock_scenario_sources(scenario_id: str, base_time: Optional[datetime] = 
                     "source_type": "health_check",
                     "name": "Database Pool Health Probe",
                     "url": "https://api.internal.mock/health/db",
-                    "value": "Failing (500 Connection Refused)",
+                    "value": "Passing (200 OK)",
                     "unit": "probe",
                     "source_updated_at": t_minus_20s,
                     "is_cached": False,
-                    "raw_payload": {"status_code": 500, "healthy": False, "component": "postgres-primary"},
+                    "raw_payload": {"status_code": 200, "healthy": True, "component": "postgres-primary"},
                 },
                 {
                     "signal_id": "SIG-LOG-01",
@@ -264,6 +264,23 @@ def get_mock_scenario_sources(scenario_id: str, base_time: Optional[datetime] = 
             ],
         }
 
+    elif scenario_id in {"MIXED", "MISSING"}:
+        scenario = get_mock_scenario_sources("TC1", base_time=now)
+        scenario["scenario_id"] = scenario_id
+        scenario["scenario_name"] = "Mixed signals" if scenario_id == "MIXED" else "Missing evidence"
+        if scenario_id == "MIXED":
+            scenario["default_scope"] = "Correlating elevated metrics with a status page reporting resolved."
+            for signal in scenario["signals"]:
+                if signal["source_type"] == "status_page":
+                    signal["value"] = "Resolved"
+                    signal["raw_payload"]["status"] = "Resolved"
+        else:
+            scenario["default_scope"] = "Investigating an incident while the log source is unavailable."
+            scenario["signals"] = [
+                signal for signal in scenario["signals"] if signal["source_type"] != "log"
+            ]
+        return scenario
+
     elif scenario_id == "RECOVERED":
         # Scenario: Complete Recovery (All fresh, health check passing, error rate <= 1.0%)
         return {
@@ -320,6 +337,17 @@ def get_mock_scenario_sources(scenario_id: str, base_time: Optional[datetime] = 
                     "is_cached": False,
                     "raw_payload": {"status_code": 200, "healthy": True},
                 },
+                {
+                    "signal_id": "SIG-LOG-REC",
+                    "source_type": "log",
+                    "name": "Checkout Recovery Log Summary",
+                    "url": "https://logs.internal.mock/explorer?query=recovery",
+                    "value": "No elevated checkout errors in the latest synthetic window.",
+                    "unit": "log_entry",
+                    "source_updated_at": t_minus_30s,
+                    "is_cached": False,
+                    "raw_payload": {"level": "INFO", "errors_last_5m": 0},
+                },
             ],
         }
 
@@ -349,6 +377,16 @@ def list_available_scenarios() -> List[Dict[str, str]]:
             "id": "TC4",
             "name": "TC4: Health check failing",
             "description": "Metrics appear green, but deep health check fails. Expected: states 'recovery uncertain' (UNCERTAIN).",
+        },
+        {
+            "id": "MIXED",
+            "name": "Mixed signals",
+            "description": "Metrics show an outage while the status page says resolved. Expected: DEGRADED from fresh telemetry.",
+        },
+        {
+            "id": "MISSING",
+            "name": "Missing evidence",
+            "description": "Log source is unavailable. Expected: UNCERTAIN with missing evidence called out.",
         },
         {
             "id": "RECOVERED",

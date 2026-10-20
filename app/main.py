@@ -4,6 +4,13 @@ Provides REST APIs and serves the single-page responsive UI.
 from __future__ import annotations
 
 import os
+import json
+import asyncio
+import logging
+import copy
+import threading
+import time
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -27,7 +34,16 @@ from app.channel import (
     reset_mock_channel,
 )
 from app.collector import IncidentInput, collect_signals
-from app.db import get_latest_test_runs, init_db, record_test_run
+from app.agent import run_agent
+from app.db import (
+    get_agent_run,
+    get_approvals_by_incident,
+    get_latest_test_runs,
+    init_db,
+    record_agent_run,
+    record_test_run,
+    update_agent_run_report,
+)
 from app.redact import redact_text, scan_for_unredacted_pii
 from app.rules import evaluate_decision_rules
 from app.sources import get_mock_scenario_sources, list_available_scenarios
@@ -39,13 +55,27 @@ app = FastAPI(
     version="1.0.0",
 )
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+allowed_origins = [
+    origin.strip()
+    for origin in os.getenv("CORS_ALLOW_ORIGINS", "").split(",")
+    if origin.strip()
+]
+if allowed_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=allowed_origins,
+        allow_credentials=False,
+        allow_methods=["GET", "POST"],
+        allow_headers=["Content-Type"],
+    )
+
+logger = logging.getLogger("incident_voice")
+_agent_cache: Dict[str, tuple[float, Dict[str, Any]]] = {}
+_agent_requests: Dict[str, List[float]] = {}
+_agent_lock = threading.Lock()
+MAX_REQUEST_BYTES = 64 * 1024
+AGENT_RATE_LIMIT = 30
+AGENT_CACHE_SECONDS = 10 * 60
 
 # Initialize Database
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
@@ -54,6 +84,14 @@ init_db()
 
 # Mount static folder
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+
+@app.middleware("http")
+async def request_size_guard(request: Request, call_next):
+    content_length = request.headers.get("content-length")
+    if content_length and int(content_length) > MAX_REQUEST_BYTES:
+        return JSONResponse(status_code=413, content={"detail": "Request body exceeds the 64 KB limit."})
+    return await call_next(request)
 
 
 @app.get("/")
@@ -97,11 +135,47 @@ class AnalyzeRequest(BaseModel):
     scope: str = Field(..., min_length=3)
     dashboards: List[str] = Field(default_factory=list)
     scenario_id: str = Field(default="TC1")
+    demo_trick: bool = False
+
+
+def _cached_response_key(req: AnalyzeRequest) -> str:
+    payload = req.model_dump()
+    payload.pop("demo_trick", None)
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+
+def _allow_agent_request(client_key: str) -> bool:
+    now = time.monotonic()
+    with _agent_lock:
+        recent = [stamp for stamp in _agent_requests.get(client_key, []) if now - stamp < 60]
+        for key, (created, _) in list(_agent_cache.items()):
+            if now - created > AGENT_CACHE_SECONDS:
+                del _agent_cache[key]
+        if len(recent) >= AGENT_RATE_LIMIT:
+            _agent_requests[client_key] = recent
+            return False
+        recent.append(now)
+        _agent_requests[client_key] = recent
+    return True
 
 
 @app.post("/api/collect-and-analyze")
-async def collect_and_analyze(req: AnalyzeRequest):
+async def collect_and_analyze(req: AnalyzeRequest, request: Request):
     """Executes Step 1 (Collect), Step 2 (Plan/Correlate), Step 3 (Find), and produces Voice Brief + Proposed Post."""
+    if not _allow_agent_request(request.client.host if request.client else "unknown"):
+        raise HTTPException(status_code=429, detail="Agent request limit reached. Wait one minute before trying again.")
+
+    demo_mode_enabled = os.getenv("DEMO_MODE", "false").strip().lower() == "true"
+    cache_key = _cached_response_key(req)
+    if not req.demo_trick and not demo_mode_enabled:
+        with _agent_lock:
+            cached = _agent_cache.get(cache_key)
+            if cached and time.monotonic() - cached[0] <= AGENT_CACHE_SECONDS:
+                cached_result = copy.deepcopy(cached[1])
+                cached_agent = cached_result.get("agent", {})
+                cached_agent["cached_result"] = True
+                return cached_result
+
     if not req.dashboards:
         # Fallback to default mock dashboards for this scenario
         src = get_mock_scenario_sources(req.scenario_id)
@@ -119,17 +193,123 @@ async def collect_and_analyze(req: AnalyzeRequest):
         collection = collect_signals(inp)
         # 2. Decision Rules
         decision = evaluate_decision_rules(collection)
-        # 3. Voice Brief & Proposed Post with Dashboard Links
-        brief = build_voice_brief_and_post(collection, decision)
+        # 3. LLM tool calls are advisory; deterministic rules and guardrails decide.
+        agent_result = await asyncio.to_thread(
+            run_agent,
+            collection,
+            decision,
+            demo_trick=req.demo_trick,
+            live_llm=True,
+            demo_mode=demo_mode_enabled,
+            scenario_id=req.scenario_id,
+        )
+        brief = agent_result.brief
+        report = agent_result.model_dump()
+        report["input"] = {
+            "incident_id": inp.incident_id,
+            "scope": collection.scope,
+            "dashboards": collection.dashboards,
+            "scenario_id": inp.scenario_id,
+            "test_mode": False,
+            "approval_simulated": False,
+        }
+        report["evidence"] = [signal.model_dump() for signal in collection.signals]
+        report["decision"] = decision.model_dump()
+        run_id = record_agent_run(inp.incident_id, report)
 
-        return {
+        result = {
             "success": True,
             "collection": collection.model_dump(),
             "decision": decision.model_dump(),
             "brief": brief.model_dump(),
+            "agent": {
+                "run_id": run_id,
+                "mode": agent_result.mode,
+                "model": agent_result.model,
+                "provider": agent_result.provider,
+                "provider_error": agent_result.provider_error,
+                "cached_result": False,
+                "confidence": agent_result.confidence,
+                "confidence_method": agent_result.confidence_method,
+                "trace": agent_result.trace,
+                "guardrail_verdict": agent_result.guardrail_verdict,
+                "guardrail_reasons": agent_result.guardrail_reasons,
+                "latency_ms": agent_result.latency_ms,
+                "token_usage": agent_result.token_usage,
+                "open_questions": agent_result.open_questions,
+            },
         }
+        if not req.demo_trick:
+            with _agent_lock:
+                _agent_cache[cache_key] = (time.monotonic(), result)
+        logger.info(
+            "Agent run completed incident_id=%s provider=%s model=%s mode=%s state=%s verdict=%s",
+            inp.incident_id, agent_result.provider, agent_result.model,
+            agent_result.mode, agent_result.state, agent_result.guardrail_verdict,
+        )
+        return result
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+        logger.exception("Incident analysis failed")
+        raise HTTPException(status_code=500, detail=f"Analysis failed: {type(e).__name__}")
+
+
+@app.get("/api/config")
+async def get_public_config():
+    """Expose non-secret runtime mode information to the UI."""
+    has_key = bool(os.getenv("LLM_API_KEY", "").strip())
+    return {
+        "mode": "LLM agent" if has_key else "Rules fallback",
+        "provider": os.getenv("LLM_PROVIDER", "gemini"),
+        "model": os.getenv("LLM_MODEL", "gemini-2.5-flash") if has_key else "rules",
+        "simulated_data": True,
+    }
+
+
+@app.get("/api/agent-runs/{run_id}")
+async def get_agent_run_endpoint(run_id: int):
+    report = get_agent_run(run_id)
+    if report is None:
+        raise HTTPException(status_code=404, detail="Agent run was not found.")
+    return report
+
+
+@app.get("/api/agent-runs/{run_id}/export")
+async def export_agent_run(run_id: int):
+    report = get_agent_run(run_id)
+    if report is None:
+        raise HTTPException(status_code=404, detail="Agent run was not found.")
+    incident_id = report.get("input", {}).get("incident_id") or report.get("brief", {}).get("incident_id")
+    if "approval" not in report:
+        approvals = get_approvals_by_incident(incident_id)
+        report["approval"] = approvals[0] if approvals else {
+            "status": "PENDING",
+            "approval_simulated": False,
+        }
+    if "post" not in report:
+        report["post"] = None
+    if report["post"] is None:
+        proposed_text = report.get("brief", {}).get("proposed_channel_post", "")
+        report["post"] = next(
+            (
+                post for post in fetch_channel_feed()
+                if post["incident_id"] == incident_id and post["message"] == proposed_text
+            ),
+            None,
+        )
+    if "verification" not in report:
+        report["verification"] = (
+            run_post_verification(
+                incident_id,
+                report["post"]["message"],
+                report["post"]["id"],
+                agent_run_id=run_id,
+            ).model_dump()
+            if report["post"] else None
+        )
+    return JSONResponse(
+        content=report,
+        headers={"Content-Disposition": f'attachment; filename="incident-run-{run_id}.json"'},
+    )
 
 
 @app.post("/api/approve", response_model=ChannelPostResult)
@@ -139,13 +319,35 @@ async def submit_approval(req: ChannelPostRequest):
     If Approved: Posts update to channel with idempotency key guard.
     If Rejected: Stores rejection and posts nothing.
     """
-    return process_channel_approval_and_post(req)
+    if req.agent_run_id is not None:
+        run_report = get_agent_run(req.agent_run_id)
+        if run_report is None or (
+            run_report.get("input", {}).get("incident_id")
+            != req.incident_id
+        ):
+            raise HTTPException(status_code=400, detail="Agent run does not match this incident.")
+    result = process_channel_approval_and_post(req)
+    if req.agent_run_id is not None:
+        approvals = get_approvals_by_incident(req.incident_id)
+        posts = [post for post in fetch_channel_feed() if post["id"] == result.post_id]
+        update_agent_run_report(
+            req.agent_run_id,
+            {
+                "approval": approvals[0] if approvals else {
+                    "status": req.approval_decision,
+                    "approval_simulated": False,
+                },
+                "post": posts[0] if posts else None,
+            },
+        )
+    return result
 
 
 class VerifyRequest(BaseModel):
     incident_id: str
     approved_text: str
     post_id: Optional[int] = None
+    agent_run_id: Optional[int] = None
 
 
 @app.post("/api/verify")
@@ -155,11 +357,18 @@ async def verify_post(req: VerifyRequest):
     Independently re-reads the channel and verifies existence, content fidelity,
     signal linkage, and absence of customer PII.
     """
+    if req.agent_run_id is not None:
+        run_report = get_agent_run(req.agent_run_id)
+        if run_report is None or run_report.get("input", {}).get("incident_id") != req.incident_id:
+            raise HTTPException(status_code=400, detail="Agent run does not match this incident.")
     report = run_post_verification(
         incident_id=req.incident_id,
         approved_text=req.approved_text,
         target_post_id=req.post_id,
+        agent_run_id=req.agent_run_id,
     )
+    if req.agent_run_id is not None:
+        update_agent_run_report(req.agent_run_id, {"verification": report.model_dump()})
     return report.model_dump()
 
 
@@ -176,144 +385,173 @@ async def reset_channel():
     return {"message": "Channel and approval ledger cleared."}
 
 
+class RunTestsRequest(BaseModel):
+    live_llm: bool = False
+
+
 @app.post("/api/run-tests")
-async def run_official_tests():
-    """Run all 4 official test cases (TC1-TC4) and idempotency checks, saving traceable results to DB."""
+async def run_official_tests(req: Optional[RunTestsRequest] = None):
+    """Run the six synthetic scenarios through collection, agent, approval, and verification."""
+    assertions = {
+        "TC1": ("DEGRADED", "includes timestamps and signal citations"),
+        "TC2": ("UNCERTAIN", "cached data is explicitly not proof of recovery"),
+        "TC3": ("UNCERTAIN", "synthetic customer data is redacted"),
+        "TC4": ("UNCERTAIN", "failing health check says recovery uncertain"),
+        "MIXED": ("DEGRADED", "fresh elevated metrics override resolved status-page text"),
+        "MISSING": ("UNCERTAIN", "unavailable log source is disclosed"),
+    }
     results = []
+    for scenario_id, (expected_state, expected_behavior) in assertions.items():
+        source = get_mock_scenario_sources(scenario_id)
+        incident_id = f"INC-{scenario_id}-TEST-{uuid.uuid4().hex[:8].upper()}"
+        incident_input = IncidentInput(
+            incident_id=incident_id,
+            scope=source.get("default_scope", f"Synthetic test for {scenario_id}"),
+            dashboards=source.get("dashboards", []),
+            scenario_id=scenario_id,
+        )
+        try:
+            collection = collect_signals(incident_input)
+            decision = evaluate_decision_rules(collection)
+            agent_result = await asyncio.to_thread(
+                run_agent,
+                collection,
+                decision,
+                live_llm=bool(req and req.live_llm),
+                demo_mode=(
+                    not bool(req and req.live_llm)
+                    and os.getenv("DEMO_MODE", "false").strip().lower() == "true"
+                ),
+                scenario_id=scenario_id,
+            )
+            run_report = agent_result.model_dump()
+            run_report["input"] = {
+                "incident_id": incident_id,
+                "scope": collection.scope,
+                "dashboards": collection.dashboards,
+                "scenario_id": scenario_id,
+                "test_mode": True,
+                "approval_simulated": True,
+            }
+            run_report["evidence"] = [signal.model_dump() for signal in collection.signals]
+            run_report["decision"] = decision.model_dump()
+            run_id = record_agent_run(incident_id, run_report)
+            brief = agent_result.brief
+            checks = {
+                "state": decision.status == expected_state,
+                "timestamp": brief.voice_script.startswith("At ") or brief.voice_script[:4].isdigit(),
+                "citations": bool(brief.claims) and all(
+                    claim.signal_id in {signal.signal_id for signal in collection.signals}
+                    and f"[{claim.signal_id}]" in brief.voice_script
+                    and claim.source_updated_at in brief.voice_script
+                    for claim in brief.claims
+                ),
+            }
+            if scenario_id == "TC2":
+                checks["cached_warning"] = decision.cached_warning and "not proof of recovery" in brief.voice_script.lower()
+            elif scenario_id == "TC3":
+                safe_text = json.dumps({
+                    "evidence": collection.model_dump(),
+                    "trace": agent_result.trace,
+                    "voice": brief.voice_script,
+                    "post": brief.proposed_channel_post,
+                })
+                checks["redaction"] = (
+                    collection.redactions_count > 0
+                    and not scan_for_unredacted_pii(safe_text)
+                )
+            elif scenario_id == "TC4":
+                checks["health_warning"] = (
+                    decision.recovery_uncertain_warning
+                    and "recovery uncertain" in brief.voice_script.lower()
+                )
+            elif scenario_id == "MIXED":
+                checks["conflict_explained"] = "conflicts" in decision.reason.lower()
+            elif scenario_id == "MISSING":
+                checks["missing_log_disclosed"] = "log source unavailable" in decision.reason.lower()
 
-    # TC1: Status update
-    try:
-        inp1 = IncidentInput(
-            incident_id="INC-TC1-AUTO",
-            scope="Checkout service experiencing high 500 error rates",
-            dashboards=["https://grafana.internal.mock/d/checkout-metrics"],
-            scenario_id="TC1",
-        )
-        c1 = collect_signals(inp1)
-        d1 = evaluate_decision_rules(c1)
-        b1 = build_voice_brief_and_post(c1, d1)
-        tc1_passed = (
-            ("UTC" in b1.timestamp_utc or ":" in b1.timestamp_utc)
-            and len(b1.claims) > 0
-            and all(c.source_updated_at != "" for c in b1.claims)
-        )
-        res1 = {
-            "test_case_id": "TC1",
-            "scenario_name": "Status update",
-            "input": {"incident_id": inp1.incident_id, "scenario": "TC1"},
-            "expected": "Includes timestamps and links each claim to dashboard ID",
-            "actual": f"Status: {d1.status}. Timestamp: {b1.timestamp_utc}. {len(b1.claims)} claims linked.",
-            "evidence": [s.model_dump() for s in c1.signals],
-            "status": "PASS" if tc1_passed else "FAIL",
-            "explanation": "Voice brief starts with UTC timestamp; claims include source updated_at timestamps and [SIG-xxx] citations.",
-        }
+            # This approval is simulated only inside this labelled test-run endpoint.
+            post = process_channel_approval_and_post(ChannelPostRequest(
+                incident_id=incident_id,
+                destination=brief.destination,
+                message=brief.proposed_channel_post,
+                approval_decision="APPROVED",
+                agent_run_id=run_id,
+            ))
+            verification = run_post_verification(
+                incident_id, brief.proposed_channel_post, post.post_id,
+                agent_run_id=run_id,
+            )
+            channel_post = next(
+                (item for item in fetch_channel_feed() if item["id"] == post.post_id),
+                None,
+            )
+            update_agent_run_report(run_id, {
+                "approval": {
+                    "status": "APPROVED",
+                    "approval_simulated": True,
+                    "destination": brief.destination,
+                    "message": brief.proposed_channel_post,
+                },
+                "post": channel_post,
+                "verification": verification.model_dump(),
+            })
+            checks["verification"] = verification.overall_status == "PASS"
+            passed = all(checks.values())
+            actual = (
+                f"State {decision.status}; provider {agent_result.provider}; mode {agent_result.mode}; "
+                f"guardrail {agent_result.guardrail_verdict}; verification {verification.overall_status}."
+            )
+            failed = [name for name, passed_check in checks.items() if not passed_check]
+            explanation = (
+                "All required assertions held; test-only approval was simulated and the independent verifier passed."
+                if passed
+                else f"Assertions not met: {', '.join(failed)}. No difference is reported as success."
+            )
+            result = {
+                "test_case_id": scenario_id,
+                "scenario_name": source.get("scenario_name", scenario_id),
+                "input": {
+                    "incident_id": incident_id,
+                    "scope": incident_input.scope,
+                    "scenario": scenario_id,
+                    "test_mode": True,
+                    "approval_simulated": True,
+                },
+                "expected": f"{expected_state}; {expected_behavior}",
+                "actual": actual,
+                "evidence": [signal.model_dump() for signal in collection.signals],
+                "mode": agent_result.mode,
+                "provider": agent_result.provider,
+                "model": agent_result.model,
+                "guardrail_verdict": agent_result.guardrail_verdict,
+                "verification": verification.model_dump(),
+                "run_id": run_id,
+                "status": "PASS" if passed else "FAIL",
+                "explanation": explanation,
+            }
+        except Exception as exc:
+            logger.exception("Scenario test failed scenario_id=%s", scenario_id)
+            result = {
+                "test_case_id": scenario_id,
+                "input": {"scenario": scenario_id, "test_mode": True, "approval_simulated": False},
+                "expected": f"{expected_state}; {expected_behavior}",
+                "actual": f"Pipeline error: {type(exc).__name__}",
+                "mode": "unavailable",
+                "status": "FAIL",
+                "explanation": "The pipeline raised an error; this run was not reported as successful.",
+            }
         record_test_run(
-            res1["test_case_id"], res1["scenario_name"], res1["input"], res1["expected"],
-            res1["actual"], res1["evidence"], res1["status"], res1["explanation"],
+            result["test_case_id"],
+            result.get("scenario_name", scenario_id),
+            result["input"],
+            result["expected"],
+            result["actual"],
+            result.get("evidence", []),
+            result["status"],
+            result["explanation"],
         )
-        results.append(res1)
-    except Exception as e:
-        results.append({"test_case_id": "TC1", "status": "FAIL", "explanation": str(e)})
-
-    # TC2: Cached dashboard
-    try:
-        inp2 = IncidentInput(
-            incident_id="INC-TC2-AUTO",
-            scope="Validating post-restart recovery metrics",
-            dashboards=["https://grafana.internal.mock/d/checkout-metrics"],
-            scenario_id="TC2",
-        )
-        c2 = collect_signals(inp2)
-        d2 = evaluate_decision_rules(c2)
-        b2 = build_voice_brief_and_post(c2, d2)
-        tc2_passed = (
-            d2.status == "UNCERTAIN"
-            and d2.cached_warning is True
-            and "this is not proof of recovery" in b2.voice_script.lower()
-        )
-        res2 = {
-            "test_case_id": "TC2",
-            "scenario_name": "Cached dashboard",
-            "input": {"incident_id": inp2.incident_id, "scenario": "TC2"},
-            "expected": "Not proof of recovery (state UNCERTAIN)",
-            "actual": f"Status: {d2.status}. Cached warning active. Output states: 'This is not proof of recovery.'",
-            "evidence": [s.model_dump() for s in c2.signals],
-            "status": "PASS" if tc2_passed else "FAIL",
-            "explanation": "Edge-cached dashboard (is_cached=True) triggered uncertainty rule. Agent explicitly stated 'this is not proof of recovery'.",
-        }
-        record_test_run(
-            res2["test_case_id"], res2["scenario_name"], res2["input"], res2["expected"],
-            res2["actual"], res2["evidence"], res2["status"], res2["explanation"],
-        )
-        results.append(res2)
-    except Exception as e:
-        results.append({"test_case_id": "TC2", "status": "FAIL", "explanation": str(e)})
-
-    # TC3: Customer data in logs
-    try:
-        inp3 = IncidentInput(
-            incident_id="INC-TC3-AUTO",
-            scope="Investigating payment failure log traces with PII",
-            dashboards=["https://logs.internal.mock/explorer"],
-            scenario_id="TC3",
-        )
-        c3 = collect_signals(inp3)
-        d3 = evaluate_decision_rules(c3)
-        b3 = build_voice_brief_and_post(c3, d3)
-        leaks = scan_for_unredacted_pii(b3.proposed_channel_post)
-        tc3_passed = len(leaks) == 0 and c3.redactions_count > 0 and "[REDACTED_EMAIL]" in b3.proposed_channel_post
-        res3 = {
-            "test_case_id": "TC3",
-            "scenario_name": "Customer data in logs",
-            "input": {"incident_id": inp3.incident_id, "scenario": "TC3 (with synthetic PII logs)"},
-            "expected": "Redacted (emails, phones, credit cards replaced with [REDACTED_*])",
-            "actual": f"Sanitized {c3.redactions_count} PII occurrences. Found 0 leaks in brief and post.",
-            "evidence": [s.model_dump() for s in c3.signals],
-            "status": "PASS" if tc3_passed else "FAIL",
-            "explanation": "Customer emails, cell phone numbers, and payment cards were masked into [REDACTED_*] prior to speech and posting.",
-        }
-        record_test_run(
-            res3["test_case_id"], res3["scenario_name"], res3["input"], res3["expected"],
-            res3["actual"], res3["evidence"], res3["status"], res3["explanation"],
-        )
-        results.append(res3)
-    except Exception as e:
-        results.append({"test_case_id": "TC3", "status": "FAIL", "explanation": str(e)})
-
-    # TC4: Health check failing
-    try:
-        inp4 = IncidentInput(
-            incident_id="INC-TC4-AUTO",
-            scope="Post-failover check: Metrics are low but probe is failing",
-            dashboards=["https://grafana.internal.mock/d/checkout-metrics", "https://api.internal.mock/health/db"],
-            scenario_id="TC4",
-        )
-        c4 = collect_signals(inp4)
-        d4 = evaluate_decision_rules(c4)
-        b4 = build_voice_brief_and_post(c4, d4)
-        tc4_passed = (
-            d4.status == "UNCERTAIN"
-            and d4.recovery_uncertain_warning is True
-            and "recovery uncertain" in b4.voice_script.lower()
-        )
-        res4 = {
-            "test_case_id": "TC4",
-            "scenario_name": "Health check failing",
-            "input": {"incident_id": inp4.incident_id, "scenario": "TC4 (green metrics + 503 probe)"},
-            "expected": "Recovery uncertain (state UNCERTAIN)",
-            "actual": f"Status: {d4.status}. Output explicitly declares: 'recovery uncertain'.",
-            "evidence": [s.model_dump() for s in c4.signals],
-            "status": "PASS" if tc4_passed else "FAIL",
-            "explanation": "Even though Grafana error rate reported 0.2%, the failing replication probe prevented premature recovery declaration.",
-        }
-        record_test_run(
-            res4["test_case_id"], res4["scenario_name"], res4["input"], res4["expected"],
-            res4["actual"], res4["evidence"], res4["status"], res4["explanation"],
-        )
-        results.append(res4)
-    except Exception as e:
-        results.append({"test_case_id": "TC4", "status": "FAIL", "explanation": str(e)})
-
+        results.append(result)
     return {"results": results}
 
 
@@ -330,22 +568,17 @@ class LLMHookRequest(BaseModel):
 
 @app.post("/api/llm-summary-hook")
 async def optional_llm_summary_hook(req: LLMHookRequest):
-    """Clearly separated, off-by-default hook for an LLM summary.
-    Per project brief: 'No LLM is required. Use explicit rule-based logic.
-    (Optionally add a clearly separated, off-by-default hook for an LLM summary.)'
-    """
+    """Retain the prior API path without pretending it invokes an LLM."""
     if not req.enabled:
         return {
             "enabled": False,
             "status": "DISABLED",
-            "message": "LLM Summary Hook is disabled by default to maintain deterministic, rule-based operation without third-party dependencies.",
+            "message": "This legacy hook is disabled. Use /api/collect-and-analyze for the guarded tool-calling agent.",
             "summary": None,
         }
-    
-    # If explicitly enabled, returns a structured synthesis while respecting safety rules
     return {
         "enabled": True,
-        "status": "ACTIVE_MOCK_LLM",
-        "message": "Deterministic rule-based summary synthesized with LLM template format.",
-        "summary": "Synthesized executive executive summary: Outage telemetry correlated across 4 dashboard probes. Safety redactions enforced.",
+        "status": "LEGACY_NO_PROVIDER_CALL",
+        "message": "This endpoint does not call a model. Use /api/collect-and-analyze to run the configured LLM agent.",
+        "summary": None,
     }

@@ -664,6 +664,44 @@
       color: #f87171;
       font-weight: 600;
     }
+
+    button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible {
+      outline: 2px solid var(--accent-blue);
+      outline-offset: 2px;
+    }
+
+    .agent-meta, .confidence-wrap, .agent-panels {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .agent-panels { align-items: stretch; margin-top: 12px; }
+    .agent-panel {
+      flex: 1 1 240px;
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 7px;
+      padding: 10px;
+      font-size: 0.78rem;
+      color: var(--text-muted);
+      white-space: pre-wrap;
+    }
+    .confidence-track { height: 8px; min-width: 120px; background: var(--bg-card); border-radius: 8px; overflow: hidden; }
+    .confidence-fill { height: 100%; background: var(--accent-blue); transition: width .2s ease; }
+    .error-text { color: #fca5a5; }
+    .sentence-active { background: var(--accent-blue-dim); border-radius: 3px; }
+    body.light-theme {
+      --bg-primary: #f1f5f9;
+      --bg-secondary: #ffffff;
+      --bg-card: #e8eef6;
+      --bg-card-hover: #dce5f0;
+      --border-color: #cbd5e1;
+      --text-main: #0f172a;
+      --text-muted: #334155;
+      --text-dim: #475569;
+    }
   </style>
 </head>
 <body>
@@ -678,13 +716,25 @@
       </div>
     </div>
     <div class="header-meta">
+      <button class="btn" onclick="toggleTheme()" type="button">Light / Dark</button>
+      <span class="tag tag-purple" id="agentModeBadge">Loading mode...</span>
+      <span class="tag tag-amber" id="cachedResultBadge" hidden>Cached result</span>
+      <span class="clock-tag mono" id="modelName">rules</span>
+      <span class="tag tag-blue">All data is simulated</span>
       <span class="live-badge"><span class="live-pulse"></span> SYSTEM READY</span>
-      <span class="clock-tag mono" id="liveClock">--:--:-- UTC</span>
+      <span class="clock-tag mono" id="liveClock">--:--:-- IST / --:--:-- UTC</span>
     </div>
   </header>
+  <nav aria-label="Console sections" style="display:flex; gap:12px; flex-wrap:wrap; margin:-8px 0 16px;">
+    <a href="#console">Console</a>
+    <a href="#agentTracePanel">Agent Trace</a>
+    <a href="#testCases">Test Cases</a>
+    <a href="#architecture">Architecture</a>
+    <a href="#safety">About / Safety</a>
+  </nav>
 
   <!-- Quick Scenario Selector -->
-  <div class="scenario-bar">
+  <div class="scenario-bar" id="console">
     <div class="scenario-label">
       <span>⚡ Quick Scenarios (Official Test Cases):</span>
     </div>
@@ -693,6 +743,8 @@
       <button class="btn-scenario" onclick="loadScenario('TC2')">TC2: Cached Dashboard</button>
       <button class="btn-scenario" onclick="loadScenario('TC3')">TC3: Customer Data in Logs</button>
       <button class="btn-scenario" onclick="loadScenario('TC4')">TC4: Health Check Failing</button>
+      <button class="btn-scenario" onclick="loadScenario('MIXED')">Mixed Signals</button>
+      <button class="btn-scenario" onclick="loadScenario('MISSING')">Missing Evidence</button>
       <button class="btn-scenario" onclick="loadScenario('RECOVERED')">System Recovered</button>
     </div>
   </div>
@@ -731,9 +783,17 @@
 
       <div style="display: flex; gap: 10px; margin-top: auto;">
         <button class="btn btn-primary" style="flex: 1;" onclick="runCollectorAndAnalysis()">
-          ⚡ Collect Signals & Plan Voice Brief
+          Run Agent
         </button>
       </div>
+      <label style="margin-top:10px; font-size:.78rem; color:var(--text-muted);">
+        <input type="checkbox" id="trickAgentToggle"> Try to trick the agent (simulate cached recovery claim)
+      </label>
+      <div id="runStatus" class="dictation-status" role="status" aria-live="polite"></div>
+      <label style="margin-top:10px; font-size:.78rem; color:var(--text-muted);">
+        <input type="checkbox" id="trickAgentToggle"> Try to trick the agent (simulate cached recovery claim)
+      </label>
+      <div id="runStatus" class="dictation-status" role="status" aria-live="polite"></div>
     </div>
 
     <!-- Right: Generated Voice Brief & Status Badge -->
@@ -750,7 +810,7 @@
       <label style="font-size: 0.75rem; text-transform: uppercase; color: var(--text-muted); font-weight: 600; margin-bottom: 6px;">
         Voice Update Script (Synchronized with Audio)
       </label>
-      <div class="voice-brief-box" id="voiceScriptBox">
+      <div class="voice-brief-box" id="voiceScriptBox" aria-live="polite">
         Click "Collect Signals & Plan Voice Brief" to generate the voice brief and correlate fresh telemetry signals...
       </div>
 
@@ -783,6 +843,24 @@
       <div style="margin-top: 14px; font-size: 0.75rem; color: var(--text-dim); border-top: 1px solid rgba(255,255,255,0.06); padding-top: 8px;">
         <strong>Decision Reason:</strong> <span id="decisionReasonText">Not evaluated yet.</span>
       </div>
+      <div class="agent-meta" style="margin-top:10px;">
+        <span class="tag tag-purple" id="runMode">Awaiting agent run</span>
+        <span class="tag tag-blue" id="guardrailState">Guardrail: pending</span>
+        <button class="btn" id="exportRunButton" onclick="exportRunReport()" disabled>Export evidence pack</button>
+      </div>
+      <div class="confidence-wrap" style="margin-top:10px; font-size:.78rem;">
+        <strong>Evidence confidence:</strong> <span id="confidenceValue">--</span>
+        <div class="confidence-track" aria-label="Evidence confidence"><div class="confidence-fill" id="confidenceFill" style="width:0%"></div></div>
+      </div>
+      <div id="confidenceMethod" class="dictation-status"></div>
+      <div class="agent-panels">
+        <div class="agent-panel"><strong>Why I'm uncertain</strong><div id="uncertaintyReasons">Run the agent to inspect missing, cached, stale, and failing evidence.</div></div>
+        <div class="agent-panel"><strong>Guardrail interventions</strong><div id="guardrailReasons">No intervention recorded.</div></div>
+      </div>
+      <details id="agentTracePanel" style="margin-top:10px;">
+        <summary>Agent trace (tool calls and observations)</summary>
+        <pre id="agentTrace" class="agent-panel" style="overflow:auto; max-height:260px;"></pre>
+      </details>
     </div>
   </div>
 
@@ -803,15 +881,17 @@
               <th>Name</th>
               <th>Extracted Value</th>
               <th>Source Updated</th>
+              <th>Retrieved</th>
               <th>Age</th>
               <th>Status</th>
             </tr>
           </thead>
           <tbody id="evidenceTableBody">
-            <tr><td colspan="7" style="text-align:center; color:var(--text-dim); padding:20px;">No telemetry collected yet.</td></tr>
+            <tr><td colspan="8" style="text-align:center; color:var(--text-dim); padding:20px;">No telemetry collected yet.</td></tr>
           </tbody>
         </table>
       </div>
+      <div class="agent-panel" style="margin-top:10px;"><strong>Evidence timeline</strong><div id="evidenceTimeline">Run the agent to compare source and retrieval times.</div></div>
     </div>
 
     <!-- Right: Claims-to-Dashboard Traceability -->
@@ -843,9 +923,14 @@
       <div class="form-group">
         <label>Proposed Channel Update (Exact Content)</label>
         <textarea id="proposedPostText" style="height: 140px; font-size: 0.78rem; line-height: 1.4;" class="mono" readonly></textarea>
+        <details style="margin-top:6px;">
+          <summary>Diff against previous proposed version</summary>
+          <pre id="postDiff" class="agent-panel"></pre>
+        </details>
       </div>
 
       <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+        <button class="btn" id="btnEdit" onclick="togglePostEdit()">Edit</button>
         <button class="btn btn-approve" id="btnApprove" onclick="submitApproval('APPROVED')" disabled>
           ✅ Approve & Post
         </button>
@@ -903,12 +988,29 @@
   </div>
 
   <!-- Row 4: Official Test Cases Runner & Verification Matrix -->
-  <div class="card" style="margin-bottom: 30px;">
+  <div class="card" id="testCases" style="margin-bottom: 30px;">
     <div class="card-header">
       <div class="card-title"><span class="icon">🧪</span> Official Test Cases Matrix (TC1 — TC4)</div>
-      <button class="btn btn-primary" onclick="runOfficialTestCases()">
-        ▶️ Run All Official Test Cases
-      </button>
+      <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+        <label style="font-size:0.8rem; color:var(--text-muted);">
+          <input id="liveLlmTestToggle" type="checkbox">
+          Run with live LLM
+        </label>
+        <button class="btn btn-primary" onclick="runOfficialTestCases()">
+          ▶️ Run All Official Test Cases
+        </button>
+      </div>
+    </div>
+
+    <div class="grid-2">
+      <section class="card" id="architecture">
+        <div class="card-header"><div class="card-title">Agent architecture</div></div>
+        <p>Collect synthetic evidence locally → one LLM synthesis call → deterministic guardrails → human approval → mock channel post → independent verification.</p>
+      </section>
+      <section class="card" id="safety">
+        <div class="card-header"><div class="card-title">About / safety</div></div>
+        <p>All telemetry is synthetic. Tool outputs are redacted before model context. Rules override model proposals; posting requires operator approval, uses idempotency, and is independently verified. No OTP or CAPTCHA automation is used.</p>
+      </section>
     </div>
     <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 12px;">
       Executes each official scenario, preserves inputs, expected results, actual results, and evidence, and explains failures/differences.
@@ -977,12 +1079,22 @@
     let speechRecognitionInstance = null;
     let currentSpeakingUtterance = null;
     let lastPostedId = null;
+    let previousProposedPost = '';
+
+    function toggleTheme() {
+      document.body.classList.toggle('light-theme');
+    }
 
     // Clock
     function updateClock() {
       const now = new Date();
-      const utcString = now.toUTCString().split(' ')[4] + ' UTC';
-      document.getElementById('liveClock').textContent = utcString;
+      const istString = new Intl.DateTimeFormat('en-GB', {
+        timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
+      }).format(now);
+      const utcString = new Intl.DateTimeFormat('en-GB', {
+        timeZone: 'UTC', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
+      }).format(now);
+      document.getElementById('liveClock').textContent = `${istString} IST / ${utcString} UTC`;
     }
     setInterval(updateClock, 1000);
     updateClock();
@@ -1011,6 +1123,14 @@
           "https://grafana.internal.mock/d/checkout-metrics",
           "https://status.mockcloud.io/services/checkout"
         ]
+      },
+      'MIXED': {
+        scope: "Correlating elevated metrics with a status page reporting resolved.",
+        dashboards: ["https://grafana.internal.mock/d/checkout-metrics", "https://status.mockcloud.io/services/checkout"]
+      },
+      'MISSING': {
+        scope: "Investigating an incident while the log source is unavailable.",
+        dashboards: ["https://grafana.internal.mock/d/checkout-metrics", "https://api.internal.mock/health/db"]
       },
       'TC3': {
         scope: "Investigating failed customer transactions and payment exceptions in logs.",
@@ -1080,8 +1200,7 @@
         };
 
         speechRecognitionInstance.onerror = (event) => {
-          console.warn('Speech recognition error:', event.error);
-          stopDictation();
+          stopDictation(`Microphone error: ${event.error}`);
         };
 
         speechRecognitionInstance.onend = () => {
@@ -1094,7 +1213,7 @@
 
     function toggleDictation() {
       if (!speechRecognitionInstance) {
-        alert('Web Speech API is not supported in this browser environment. You can type or paste the scope directly.');
+        document.getElementById('dictationStatus').textContent = 'Web Speech API is not supported in this browser. Type or paste the scope instead.';
         return;
       }
       if (isDictating) {
@@ -1115,20 +1234,24 @@
         st.textContent = '🎙️ Listening... (speak now)';
         st.classList.add('active');
       } catch (e) {
-        console.error(e);
+        document.getElementById('dictationStatus').textContent = `Microphone error: ${e.message}`;
       }
     }
 
-    function stopDictation() {
-      try {
-        if (speechRecognitionInstance) speechRecognitionInstance.stop();
-      } catch (e) {}
+    function stopDictation(errorText = '') {
+      if (speechRecognitionInstance && isDictating) {
+        try {
+          speechRecognitionInstance.stop();
+        } catch (error) {
+          document.getElementById('dictationStatus').textContent = `Microphone error: ${error.message}`;
+        }
+      }
       isDictating = false;
       const micBtn = document.getElementById('micBtn');
       micBtn.classList.remove('recording');
       document.getElementById('micBtnText').textContent = 'Dictate';
       const st = document.getElementById('dictationStatus');
-      st.textContent = 'SpeechRecognition: Ready';
+      st.textContent = errorText || 'SpeechRecognition: Ready';
       st.classList.remove('active');
     }
 
@@ -1139,11 +1262,13 @@
       const dashboards = document.getElementById('dashboardsInput').value.split('\n').map(s => s.trim()).filter(Boolean);
 
       if (!scope) {
-        alert('Please enter an incident scope before running analysis.');
+        document.getElementById('runStatus').textContent = 'Enter an incident scope before running the agent.';
         return;
       }
 
       try {
+        const runStatus = document.getElementById('runStatus');
+        runStatus.textContent = 'Agent working: collecting synthetic evidence and checking guardrails...';
         const res = await fetch('/api/collect-and-analyze', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
@@ -1151,22 +1276,24 @@
             incident_id: incId,
             scope: scope,
             dashboards: dashboards,
-            scenario_id: currentScenario
+            scenario_id: currentScenario,
+            demo_trick: document.getElementById('trickAgentToggle').checked
           })
         });
 
-        if (!res.ok) throw new Error(await res.text());
+        if (!res.ok) throw new Error((await res.json()).detail || `Request failed (${res.status})`);
         const data = await res.json();
         currentAnalysisData = data;
 
         renderAnalysisResults(data);
+        runStatus.textContent = `Run complete: ${data.agent.mode}.`;
       } catch (err) {
-        alert('Error collecting telemetry: ' + err.message);
+        document.getElementById('runStatus').innerHTML = `<span class="error-text">Run failed: ${escapeHtml(err.message)}</span>`;
       }
     }
 
     function renderAnalysisResults(data) {
-      const { collection, decision, brief } = data;
+      const { collection, decision, brief, agent } = data;
 
       // 1. Status Badge
       const statusBadgeContainer = document.getElementById('statusBadgeContainer');
@@ -1178,6 +1305,8 @@
         alertEl.innerHTML = `<div class="banner banner-warning">⚠️ <strong>Cached Dashboard Warning:</strong> ${decision.reason} <em>This is not proof of recovery.</em></div>`;
       } else if (decision.recovery_uncertain_warning) {
         alertEl.innerHTML = `<div class="banner banner-warning">⚠️ <strong>Health Probe Warning:</strong> ${decision.reason} <em>Recovery uncertain.</em></div>`;
+      } else if (decision.uncertainty_flag) {
+        alertEl.innerHTML = `<div class="banner banner-warning">Evidence is incomplete or stale: ${escapeHtml(decision.reason)}</div>`;
       } else if (decision.status === 'RECOVERED') {
         alertEl.innerHTML = `<div class="banner banner-success">✅ <strong>All Probes Healthy:</strong> All signals fresh, error rate ≤ 1%, probes passing.</div>`;
       } else {
@@ -1185,7 +1314,9 @@
       }
 
       // 3. Voice Brief Text
-      document.getElementById('voiceScriptBox').textContent = brief.voice_script;
+      const scriptEl = document.getElementById('voiceScriptBox');
+      const sentences = brief.voice_script.trim().split(/(?<=[.!?])\s+(?=[A-Z])/g);
+      scriptEl.innerHTML = sentences.map(sentence => `<span class="speech-sentence">${escapeHtml(sentence)} </span>`).join('');
       document.getElementById('decisionReasonText').textContent = decision.reason;
       document.getElementById('btnSpeak').disabled = false;
       document.getElementById('btnStopSpeak').disabled = true;
@@ -1202,10 +1333,11 @@
         row.innerHTML = `
           <td class="mono"><strong>${s.signal_id}</strong></td>
           <td><span class="tag tag-blue">${s.source_type}</span></td>
-          <td><a href="${s.url}" target="_blank" style="color:var(--text-main); text-decoration:none;">${s.name}</a></td>
-          <td class="mono"><strong>${s.value} ${s.unit}</strong></td>
-          <td class="mono" style="font-size:0.75rem;">${s.source_updated_at}</td>
-          <td class="mono">${s.age_seconds}s</td>
+          <td><a href="${escapeHtml(s.url)}" target="_blank" rel="noopener" style="color:var(--text-main); text-decoration:none;">${escapeHtml(s.name)}</a></td>
+          <td class="mono"><strong>${escapeHtml(`${s.value} ${s.unit}`)}</strong></td>
+          <td class="mono" style="font-size:0.75rem;">${escapeHtml(s.source_updated_at)}</td>
+          <td class="mono" style="font-size:0.75rem;">${escapeHtml(s.retrieved_at)}</td>
+          <td class="mono">${escapeHtml(String(s.age_seconds))}s</td>
           <td>${statusTag}</td>
         `;
         tb.appendChild(row);
@@ -1221,11 +1353,13 @@
         cdiv.innerHTML = `
           <div class="claim-id-badge">${clm.signal_id}</div>
           <div class="claim-content">
-            <div>${clm.claim_text}</div>
+            <div>${escapeHtml(clm.claim_text)}</div>
             <div class="claim-links">
-              Source: <a href="${clm.source_url}" target="_blank">${clm.source_name}</a> • 
-              Observed Value: <span class="mono">${clm.extracted_value}</span> • 
-              Updated: <span class="mono">${clm.source_updated_at}</span>
+              Source: <a href="${escapeHtml(clm.source_url)}" target="_blank" rel="noopener">${escapeHtml(clm.source_name)}</a> •
+              Observed Value: <span class="mono">${escapeHtml(clm.extracted_value)}</span> •
+              Updated: <span class="mono">${escapeHtml(clm.source_updated_at)}</span> •
+              Freshness: <span class="tag ${clm.is_cached ? 'tag-amber' : (clm.is_stale ? 'tag-red' : 'tag-green')}">${clm.is_cached ? 'CACHED' : (clm.is_stale ? 'STALE' : 'FRESH')}</span> •
+              Rule: <span>${decision.status === 'UNCERTAIN' ? 'uncertainty rule applies' : 'fresh evidence and rule-state agreement'}</span>
             </div>
           </div>
         `;
@@ -1234,53 +1368,126 @@
 
       // 6. Approval Panel
       document.getElementById('postDestination').textContent = brief.destination;
+      previousProposedPost = document.getElementById('proposedPostText').value;
       document.getElementById('proposedPostText').value = brief.proposed_channel_post;
+      document.getElementById('proposedPostText').readOnly = true;
+      document.getElementById('btnEdit').textContent = 'Edit';
+      document.getElementById('postDiff').textContent = previousProposedPost
+        ? `--- Previous\n${previousProposedPost}\n+++ Current\n${brief.proposed_channel_post}`
+        : 'No previous proposed version in this page session.';
       document.getElementById('btnApprove').disabled = false;
       document.getElementById('btnReject').disabled = false;
       document.getElementById('btnRetry').disabled = true; // Enabled after first approval
       document.getElementById('approvalStateTag').className = 'tag tag-amber';
       document.getElementById('approvalStateTag').textContent = 'Pending Operator Approval';
       document.getElementById('idempotencyNotice').innerHTML = '';
+
+      const modeBadge = document.getElementById('agentModeBadge');
+      modeBadge.textContent = agent.provider_error || agent.mode;
+      modeBadge.title = '';
+      document.getElementById('modelName').textContent = `${agent.provider || ''} ${agent.model}`.trim();
+      document.getElementById('cachedResultBadge').hidden = !agent.cached_result;
+      document.getElementById('runMode').textContent = agent.mode;
+      document.getElementById('guardrailState').textContent = `Guardrail: ${agent.guardrail_verdict}`;
+      document.getElementById('confidenceValue').textContent = `${Math.round(agent.confidence * 100)}%`;
+      document.getElementById('confidenceFill').style.width = `${Math.round(agent.confidence * 100)}%`;
+      document.getElementById('confidenceMethod').textContent = agent.confidence_method;
+      const reasons = [];
+      collection.signals.forEach(s => {
+        if (s.is_cached) reasons.push(`${s.signal_id}: cached`);
+        if (s.is_stale) reasons.push(`${s.signal_id}: stale (${s.age_seconds}s)`);
+        if (s.source_type === 'health_check' && /failing|500|503|unhealthy|error/i.test(s.value)) {
+          reasons.push(`${s.signal_id}: failing health check`);
+        }
+      });
+      for (const requiredType of ['metric', 'health_check', 'log']) {
+        if (!collection.signals.some(s => s.source_type === requiredType)) {
+          reasons.push(`Missing ${requiredType} evidence`);
+        }
+      }
+      document.getElementById('uncertaintyReasons').textContent = reasons.length
+        ? reasons.join('\n')
+        : (decision.uncertainty_flag ? decision.reason : 'No cached, stale, missing, or failing evidence detected.');
+      document.getElementById('guardrailReasons').textContent = agent.guardrail_reasons.length
+        ? agent.guardrail_reasons.join('\n')
+        : `No intervention. Final verdict: ${agent.guardrail_verdict}.`;
+      document.getElementById('agentTrace').textContent = JSON.stringify(agent.trace, null, 2);
+      document.getElementById('exportRunButton').disabled = !agent.run_id;
+      document.getElementById('exportRunButton').dataset.runId = agent.run_id || '';
+      document.getElementById('evidenceTimeline').textContent = collection.signals
+        .map(s => `${s.signal_id}: ${s.source_updated_at} -> retrieved ${s.retrieved_at} (${s.is_cached ? 'cached' : (s.is_stale ? 'stale' : 'fresh')})`)
+        .join('\n');
+    }
+
+    function togglePostEdit() {
+      const message = document.getElementById('proposedPostText');
+      message.readOnly = !message.readOnly;
+      document.getElementById('btnEdit').textContent = message.readOnly ? 'Edit' : 'Finish editing';
+      if (message.readOnly && currentAnalysisData) currentAnalysisData.brief.proposed_channel_post = message.value;
+    }
+
+    async function loadRuntimeMode() {
+      try {
+        const response = await fetch('/api/config');
+        if (!response.ok) throw new Error(`Configuration request failed (${response.status})`);
+        const config = await response.json();
+        document.getElementById('agentModeBadge').textContent = config.mode;
+        document.getElementById('modelName').textContent = config.model;
+      } catch (error) {
+        document.getElementById('agentModeBadge').textContent = 'Mode unavailable';
+        document.getElementById('runStatus').textContent = `Unable to load runtime mode: ${error.message}`;
+      }
+    }
+
+    function exportRunReport() {
+      const runId = document.getElementById('exportRunButton').dataset.runId;
+      if (runId) window.location.href = `/api/agent-runs/${encodeURIComponent(runId)}/export`;
     }
 
     // TTS: Read Aloud
     function playVoiceBrief() {
       if (!('speechSynthesis' in window)) {
-        alert('Browser Text-to-Speech (speechSynthesis) is not available in this browser.');
+        document.getElementById('runStatus').textContent = 'Text-to-speech is unavailable in this browser; the visible subtitles are still available.';
         return;
       }
 
       window.speechSynthesis.cancel();
-      const text = document.getElementById('voiceScriptBox').textContent;
-      if (!text) return;
-
-      currentSpeakingUtterance = new SpeechSynthesisUtterance(text);
+      const sentences = Array.from(document.querySelectorAll('#voiceScriptBox .speech-sentence'));
+      if (!sentences.length) return;
       const rateEl = document.getElementById('voiceRate');
-      currentSpeakingUtterance.rate = parseFloat(rateEl.value) || 1.0;
-
       const wave = document.getElementById('waveAnim');
       const btnSpeak = document.getElementById('btnSpeak');
       const btnStop = document.getElementById('btnStopSpeak');
-
-      currentSpeakingUtterance.onstart = () => {
-        wave.classList.add('active');
-        btnSpeak.disabled = true;
-        btnStop.disabled = false;
+      let sentenceIndex = 0;
+      const speakNext = () => {
+        sentences.forEach(sentence => sentence.classList.remove('sentence-active'));
+        if (sentenceIndex >= sentences.length) {
+          wave.classList.remove('active');
+          btnSpeak.disabled = false;
+          btnStop.disabled = true;
+          return;
+        }
+        const sentence = sentences[sentenceIndex++];
+        sentence.classList.add('sentence-active');
+        currentSpeakingUtterance = new SpeechSynthesisUtterance(sentence.textContent);
+        currentSpeakingUtterance.rate = parseFloat(rateEl.value) || 1.0;
+        currentSpeakingUtterance.onstart = () => {
+          wave.classList.add('active');
+          btnSpeak.disabled = true;
+          btnStop.disabled = false;
+        };
+        currentSpeakingUtterance.onend = speakNext;
+        currentSpeakingUtterance.onerror = () => {
+          document.getElementById('runStatus').textContent = 'Speech playback failed; read the visible highlighted subtitles.';
+          wave.classList.remove('active');
+          btnSpeak.disabled = false;
+          btnStop.disabled = true;
+          sentences.forEach(item => item.classList.remove('sentence-active'));
+        };
+        window.speechSynthesis.speak(currentSpeakingUtterance);
       };
-
-      currentSpeakingUtterance.onend = () => {
-        wave.classList.remove('active');
-        btnSpeak.disabled = false;
-        btnStop.disabled = true;
-      };
-
-      currentSpeakingUtterance.onerror = () => {
-        wave.classList.remove('active');
-        btnSpeak.disabled = false;
-        btnStop.disabled = true;
-      };
-
-      window.speechSynthesis.speak(currentSpeakingUtterance);
+      sentences.forEach(sentence => sentence.classList.remove('sentence-active'));
+      speakNext();
     }
 
     function stopVoiceBrief() {
@@ -1288,6 +1495,9 @@
         window.speechSynthesis.cancel();
       }
       document.getElementById('waveAnim').classList.remove('active');
+      document.querySelectorAll('#voiceScriptBox .speech-sentence').forEach(sentence => {
+        sentence.classList.remove('sentence-active');
+      });
       document.getElementById('btnSpeak').disabled = false;
       document.getElementById('btnStopSpeak').disabled = true;
     }
@@ -1298,7 +1508,7 @@
 
       const incId = currentAnalysisData.collection.incident_id;
       const destination = currentAnalysisData.brief.destination;
-      const message = currentAnalysisData.brief.proposed_channel_post;
+      const message = document.getElementById('proposedPostText').value;
 
       try {
         const res = await fetch('/api/approve', {
@@ -1308,7 +1518,8 @@
             incident_id: incId,
             destination: destination,
             message: message,
-            approval_decision: decision
+            approval_decision: decision,
+            agent_run_id: currentAnalysisData.agent.run_id
           })
         });
 
@@ -1341,7 +1552,7 @@
         await loadChannelFeed();
 
         // Run Independent Verification
-        await runVerification(incId, message, data.post_id);
+        await runVerification(incId, message, data.post_id, currentAnalysisData.agent.run_id);
 
       } catch (err) {
         alert('Approval execution error: ' + err.message);
@@ -1353,7 +1564,7 @@
       if (!currentAnalysisData) return;
       const incId = currentAnalysisData.collection.incident_id;
       const destination = currentAnalysisData.brief.destination;
-      const message = currentAnalysisData.brief.proposed_channel_post;
+      const message = document.getElementById('proposedPostText').value;
 
       const res = await fetch('/api/approve', {
         method: 'POST',
@@ -1362,7 +1573,8 @@
           incident_id: incId,
           destination: destination,
           message: message,
-          approval_decision: 'APPROVED'
+          approval_decision: 'APPROVED',
+          agent_run_id: currentAnalysisData.agent.run_id
         })
       });
 
@@ -1422,7 +1634,7 @@
     }
 
     // Independent Verification
-    async function runVerification(incidentId, approvedText, postId) {
+    async function runVerification(incidentId, approvedText, postId, agentRunId) {
       try {
         const res = await fetch('/api/verify', {
           method: 'POST',
@@ -1430,7 +1642,8 @@
           body: JSON.stringify({
             incident_id: incidentId,
             approved_text: approvedText,
-            post_id: postId
+            post_id: postId,
+            agent_run_id: agentRunId
           })
         });
 
@@ -1438,7 +1651,7 @@
         const tag = document.getElementById('verificationStateTag');
         if (report.overall_status === 'PASS') {
           tag.className = 'tag tag-green';
-          tag.textContent = 'VERIFIED (4/4 PASS)';
+          tag.textContent = `VERIFIED (${report.passed_checks}/${report.total_checks} PASS)`;
         } else {
           tag.className = 'tag tag-red';
           tag.textContent = 'VERIFICATION FAILED';
@@ -1452,13 +1665,13 @@
           const badgeClass = chk.status === 'PASS' ? 'tag-green' : 'tag-red';
           ccard.innerHTML = `
             <div class="check-card-head">
-              <span>${chk.name}</span>
-              <span class="tag ${badgeClass}">${chk.status}</span>
+              <span>${escapeHtml(chk.name)}</span>
+              <span class="tag ${badgeClass}">${escapeHtml(chk.status)}</span>
             </div>
             <div class="check-meta">
-              <strong>Expected:</strong> ${chk.expected}<br>
-              <strong>Observed:</strong> ${chk.observed}<br>
-              <em>${chk.details}</em>
+              <strong>Expected:</strong> ${escapeHtml(chk.expected)}<br>
+              <strong>Observed:</strong> ${escapeHtml(chk.observed)}<br>
+              <em>${escapeHtml(chk.details)}</em>
             </div>
           `;
           box.appendChild(ccard);
@@ -1471,10 +1684,15 @@
     // Official Test Cases Runner
     async function runOfficialTestCases() {
       const tb = document.getElementById('testMatrixBody');
-      tb.innerHTML = `<tr><td colspan="7" style="text-align:center; padding:20px; color:var(--accent-blue);">Running official test cases TC1 through TC4...</td></tr>`;
+      tb.innerHTML = `<tr><td colspan="7" style="text-align:center; padding:20px; color:var(--accent-blue);">Running all six synthetic scenarios through the agent...</td></tr>`;
 
       try {
-        const res = await fetch('/api/run-tests', { method: 'POST' });
+        const liveLlm = document.getElementById('liveLlmTestToggle').checked;
+        const res = await fetch('/api/run-tests', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ live_llm: liveLlm })
+        });
         const data = await res.json();
         const results = data.results;
 
@@ -1509,6 +1727,7 @@
       initSpeechRecognition();
       loadScenario('TC1');
       loadChannelFeed();
+      loadRuntimeMode();
     });
   </script>
 </body>

@@ -13,7 +13,12 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel
 
-from app.db import get_all_posts, get_signals_by_incident
+from app.db import (
+    get_all_posts,
+    get_agent_run,
+    get_latest_agent_run_for_incident,
+    get_signals_by_incident,
+)
 from app.redact import scan_for_unredacted_pii
 
 SIGNAL_ID_PATTERN = re.compile(r"\[(SIG-[A-Z0-9-]+)\]")
@@ -42,6 +47,7 @@ def run_post_verification(
     incident_id: str,
     approved_text: str,
     target_post_id: Optional[int] = None,
+    agent_run_id: Optional[int] = None,
 ) -> VerificationReport:
     """Execute rigorous independent verification of channel post."""
     now_iso = datetime.now(timezone.utc).isoformat()
@@ -92,6 +98,27 @@ def run_post_verification(
             checks=checks,
         )
 
+    agent_run = get_agent_run(agent_run_id) if agent_run_id is not None else None
+    if agent_run and agent_run.get("input", {}).get("incident_id") != incident_id:
+        agent_run = None
+    if agent_run_id is None:
+        agent_run = get_latest_agent_run_for_incident(incident_id)
+    verdict = agent_run["guardrail_verdict"] if agent_run else "MISSING"
+    acceptable_verdict = verdict in {"PASS", "FALLBACK"}
+    checks.append(
+        CheckItem(
+            name="Agent Guardrail Verdict",
+            status="PASS" if acceptable_verdict else "FAIL",
+            expected="PASS or deterministic FALLBACK recorded for the incident run",
+            observed=f"Recorded verdict: {verdict}",
+            details=(
+                "The run was explicitly cleared for publication."
+                if acceptable_verdict
+                else "No acceptable agent guardrail verdict is associated with this incident."
+            ),
+        )
+    )
+
     posted_content = target_post["message"]
 
     # Check 2: Text equals approved text exactly
@@ -125,6 +152,12 @@ def run_post_verification(
     known_signal_ids = {s["signal_id"] for s in db_signals}
 
     found_signal_ids = set(SIGNAL_ID_PATTERN.findall(posted_content))
+    agent_claims = agent_run.get("claims", []) if agent_run else []
+    claim_signal_ids = {
+        claim.get("signal_id")
+        for claim in agent_claims
+        if isinstance(claim, dict) and isinstance(claim.get("signal_id"), str)
+    }
     if not found_signal_ids:
         checks.append(
             CheckItem(
@@ -136,8 +169,9 @@ def run_post_verification(
             )
         )
     else:
-        invalid_ids = found_signal_ids - known_signal_ids
-        if not invalid_ids:
+        invalid_ids = (found_signal_ids | claim_signal_ids) - known_signal_ids
+        missing_claim_citations = claim_signal_ids - found_signal_ids
+        if not invalid_ids and not missing_claim_citations:
             checks.append(
                 CheckItem(
                     name="Claims Linked to Dashboard IDs",
@@ -148,13 +182,18 @@ def run_post_verification(
                 )
             )
         else:
+            issue = []
+            if invalid_ids:
+                issue.append(f"Unrecognized signal IDs: {', '.join(sorted(invalid_ids))}")
+            if missing_claim_citations:
+                issue.append(f"Agent claims missing from posted text: {', '.join(sorted(missing_claim_citations))}")
             checks.append(
                 CheckItem(
                     name="Claims Linked to Dashboard IDs",
                     status="FAIL",
-                    expected="All cited signal IDs must exist in evidence store",
-                    observed=f"Unrecognized signal IDs cited: {', '.join(sorted(invalid_ids))}",
-                    details="Post references phantom or unverified signal IDs.",
+                    expected="Every agent claim is cited in the approved post and exists in evidence",
+                    observed="; ".join(issue),
+                    details="A claim references phantom evidence or was omitted from the posted text.",
                 )
             )
 

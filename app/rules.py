@@ -55,15 +55,35 @@ def evaluate_decision_rules(
     metric_signals = [s for s in collection.signals if s.source_type == "metric"]
     health_signals = [s for s in collection.signals if s.source_type == "health_check"]
 
+    log_signals = [s for s in collection.signals if s.source_type == "log"]
+    failing_health_checks = []
+    for health_signal in health_signals:
+        value = health_signal.value.lower()
+        healthy = health_signal.raw_payload.get("healthy")
+        explicitly_passing = (
+            healthy is True
+            or any(marker in value for marker in ("passing", "healthy", "200 ok"))
+        )
+        explicitly_failing = (
+            healthy is False
+            or any(marker in value for marker in ("failing", "unhealthy", "error", "500", "503"))
+        )
+        if explicitly_failing or not explicitly_passing:
+            failing_health_checks.append(health_signal)
     if not metric_signals or not health_signals:
-        reason = "Required evidence is missing (metric dashboard or health check). Agent returns uncertain state, never guessing."
+        missing = []
+        if not metric_signals:
+            missing.append("metric dashboard")
+        if not health_signals:
+            missing.append("health check")
+        reason = f"Required evidence is missing ({', '.join(missing)}). Agent returns uncertain state, never guessing."
         key_findings.append("Missing required signals from monitoring sources.")
         res = DecisionResult(
             status="UNCERTAIN",
             reason=reason,
             uncertainty_flag=True,
             cached_warning=False,
-            recovery_uncertain_warning=False,
+            recovery_uncertain_warning=bool(failing_health_checks),
             evidence_summary=evidence_summary,
             key_findings=key_findings,
         )
@@ -73,17 +93,7 @@ def evaluate_decision_rules(
 
     # Rule 2: Check for cached dashboards (this is not proof of recovery)
     cached_signals = [s for s in collection.signals if s.is_cached]
-    stale_signals = [s for s in collection.signals if s.age_seconds > 300.0 and not s.is_cached]
-
-    # Rule 3: Check health checks
-    failing_health_checks = []
-    for hs in health_signals:
-        val_lower = hs.value.lower()
-        # Probe considered failing if contains "failing", "500", "503", "error", or healthy is false in payload
-        if "failing" in val_lower or "500" in val_lower or "503" in val_lower or "unhealthy" in val_lower:
-            failing_health_checks.append(hs)
-        elif hs.raw_payload and not hs.raw_payload.get("healthy", True):
-            failing_health_checks.append(hs)
+    stale_signals = [s for s in collection.signals if (s.is_stale or s.age_seconds > 300.0) and not s.is_cached]
 
     # Extract primary error rate metric
     error_rate_val = None
@@ -107,7 +117,7 @@ def evaluate_decision_rules(
             reason=reason,
             uncertainty_flag=True,
             cached_warning=True,
-            recovery_uncertain_warning=False,
+            recovery_uncertain_warning=bool(failing_health_checks),
             evidence_summary=evidence_summary,
             key_findings=key_findings,
         )
@@ -124,7 +134,7 @@ def evaluate_decision_rules(
             reason=reason,
             uncertainty_flag=True,
             cached_warning=False,
-            recovery_uncertain_warning=False,
+            recovery_uncertain_warning=bool(failing_health_checks),
             evidence_summary=evidence_summary,
             key_findings=key_findings,
         )
@@ -140,11 +150,7 @@ def evaluate_decision_rules(
         key_findings.append(f"Failing health probes detected: {failing_names}. Recovery uncertain.")
         
         # If error rate is high, also note degraded behavior
-        if error_rate_val is not None and error_rate_val > 1.0:
-            status = "DEGRADED"
-            reason = f"Health probe failing ({failing_names}) and API error rate elevated at {error_rate_val}%."
-        else:
-            status = "UNCERTAIN"
+        status = "UNCERTAIN"
 
         res = DecisionResult(
             status=status,
@@ -152,6 +158,22 @@ def evaluate_decision_rules(
             uncertainty_flag=True,
             cached_warning=False,
             recovery_uncertain_warning=True,
+            evidence_summary=evidence_summary,
+            key_findings=key_findings,
+        )
+        if save_to_db:
+            save_decision(collection.incident_id, res.status, res.reason, res.uncertainty_flag, res.cached_warning, evidence_summary)
+        return res
+
+    if not log_signals:
+        reason = "Required evidence is missing (log source unavailable). State is uncertain."
+        key_findings.append("Log source is unavailable.")
+        res = DecisionResult(
+            status="UNCERTAIN",
+            reason=reason,
+            uncertainty_flag=True,
+            cached_warning=False,
+            recovery_uncertain_warning=False,
             evidence_summary=evidence_summary,
             key_findings=key_findings,
         )
@@ -179,8 +201,16 @@ def evaluate_decision_rules(
     # Rule 5: Fresh signals + passing health check + error rate > 1% -> DEGRADED
     if error_rate_val > 1.0:
         sig_ref = f"[{error_metric_signal.signal_id}]" if error_metric_signal else ""
-        reason = f"All signals fresh and health checks passing, but error rate is {error_rate_val}% {sig_ref}, exceeding the 1.0% threshold."
+        status_conflict = any(
+            signal.source_type == "status_page"
+            and any(word in signal.value.lower() for word in ("resolved", "operational"))
+            for signal in collection.signals
+        )
+        conflict_note = " Status page reports resolved/operational, which conflicts with the elevated metric." if status_conflict else ""
+        reason = f"All signals fresh and health checks passing, but error rate is {error_rate_val}% {sig_ref}, exceeding the 1.0% threshold.{conflict_note}"
         key_findings.append(f"Elevated error rate: {error_rate_val}% (threshold 1.0%).")
+        if status_conflict:
+            key_findings.append("Status page claims recovery while error-rate telemetry remains elevated.")
         res = DecisionResult(
             status="DEGRADED",
             reason=reason,

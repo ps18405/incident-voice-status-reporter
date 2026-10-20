@@ -15,6 +15,9 @@ from app.main import app
 @pytest.fixture(autouse=True)
 def isolated_temp_db(tmp_path: Path, monkeypatch):
     """Autouse fixture: Isolates every test run with a dedicated temporary SQLite DB."""
+    monkeypatch.setenv("LLM_API_KEY", "")
+    monkeypatch.setenv("DEMO_MODE", "false")
+    monkeypatch.setenv("RECORD_LLM", "false")
     temp_db_path = tmp_path / "test_incident_reporter.db"
     monkeypatch.setattr(db_mod, "DB_PATH", temp_db_path)
     db_mod.init_db(temp_db_path)

@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import hashlib
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, Field
 
 from app.db import (
@@ -23,7 +23,8 @@ class ChannelPostRequest(BaseModel):
     incident_id: str
     destination: str = Field(default_factory=lambda: os.getenv("DEFAULT_CHANNEL", "#incident-response"))
     message: str
-    approval_decision: str  # "APPROVED" | "REJECTED"
+    approval_decision: Literal["APPROVED", "REJECTED"]
+    agent_run_id: Optional[int] = None
 
 
 class ChannelPostResult(BaseModel):
