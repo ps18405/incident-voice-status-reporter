@@ -108,6 +108,7 @@ def _openai_request(
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
         method="POST",
     )
+    request.add_header("Authorization", "Bearer " + api_key)
     try:
         with urlopen(request, timeout=timeout) as response:
             payload = json.loads(response.read().decode("utf-8"))
@@ -278,6 +279,8 @@ def save_recorded_response(
     response: str,
     provider: str,
     model: str,
+    source_timestamps: Dict[str, str],
+    incident_id: str,
 ) -> None:
     path = Path(os.getenv("LLM_RECORDINGS_PATH", "data/llm_recordings.json"))
     with _recordings_lock:
@@ -289,6 +292,8 @@ def save_recorded_response(
                 "response": response,
                 "provider": provider,
                 "model": model,
+                "source_timestamps": source_timestamps,
+                "incident_id": incident_id,
                 "recorded_at": datetime.now(timezone.utc).isoformat(),
             }
             path.parent.mkdir(parents=True, exist_ok=True)

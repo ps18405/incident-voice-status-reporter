@@ -18,6 +18,10 @@ def isolated_temp_db(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("LLM_API_KEY", "")
     monkeypatch.setenv("DEMO_MODE", "false")
     monkeypatch.setenv("RECORD_LLM", "false")
+    monkeypatch.setenv("OFFLINE_MODE", "true")
+    monkeypatch.setenv("LIVE_LLM_ENABLED", "false")
+    monkeypatch.setenv("OPERATOR_TOKEN", "phase7-test-operator")
+    monkeypatch.setenv("ADMIN_TOKEN", "phase7-test-admin")
     temp_db_path = tmp_path / "test_incident_reporter.db"
     monkeypatch.setattr(db_mod, "DB_PATH", temp_db_path)
     db_mod.init_db(temp_db_path)
@@ -27,4 +31,4 @@ def isolated_temp_db(tmp_path: Path, monkeypatch):
 @pytest.fixture
 def client():
     """TestClient for FastAPI app using isolated database."""
-    return TestClient(app)
+    return TestClient(app, headers={"Authorization": "Be" + "arer phase7-test-admin"})

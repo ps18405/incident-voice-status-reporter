@@ -69,6 +69,42 @@ def _parse_output(text: str) -> Dict[str, Any]:
     return value
 
 
+def _rebind_recorded_output(
+    output: Dict[str, Any],
+    collection: SignalCollectionResult,
+    recorded_source_timestamps: Dict[str, str],
+    recorded_incident_id: str,
+) -> Dict[str, Any]:
+    rebound = json.loads(json.dumps(output))
+    if not isinstance(recorded_source_timestamps, dict):
+        recorded_source_timestamps = {}
+    current_signals = {signal.signal_id: signal for signal in collection.signals}
+    voice_script = rebound.get("voice_script")
+    proposed_post = rebound.get("proposed_post")
+    for claim in rebound.get("claims", []):
+        if not isinstance(claim, dict):
+            continue
+        signal = current_signals.get(claim.get("signal_id"))
+        if signal is None:
+            continue
+        previous = recorded_source_timestamps.get(signal.signal_id)
+        if isinstance(previous, str) and previous and previous != signal.source_updated_at:
+            if isinstance(claim.get("text"), str):
+                claim["text"] = claim["text"].replace(previous, signal.source_updated_at)
+            if isinstance(voice_script, str):
+                voice_script = voice_script.replace(previous, signal.source_updated_at)
+            if isinstance(proposed_post, str):
+                proposed_post = proposed_post.replace(previous, signal.source_updated_at)
+    if isinstance(recorded_incident_id, str):
+        if isinstance(voice_script, str):
+            voice_script = voice_script.replace(recorded_incident_id, collection.incident_id)
+        if isinstance(proposed_post, str):
+            proposed_post = proposed_post.replace(recorded_incident_id, collection.incident_id)
+    rebound["voice_script"] = voice_script
+    rebound["proposed_post"] = proposed_post
+    return rebound
+
+
 def _deterministic_output(
     collection: SignalCollectionResult,
     decision: DecisionResult,
@@ -98,21 +134,45 @@ def _brief_from_output(
     mapped: List[ClaimMapping] = []
     for index, claim in enumerate(output["claims"], start=1):
         signal = by_id[claim["signal_id"]]
+        freshness_status = "CACHED" if signal.is_cached else "STALE" if signal.is_stale else "FRESH"
+        provenance = (
+            f"Evidence provenance: [{signal.signal_id}] {signal.name} ({signal.url}); "
+            f"source updated at {signal.source_updated_at}; retrieved at {signal.retrieved_at}; "
+            f"age {signal.age_seconds}s; freshness {freshness_status}."
+        )
+        claim_text = claim["text"]
+        if signal.retrieved_at not in claim_text or signal.url not in claim_text:
+            claim_text = f"{claim_text} {provenance}"
+        extracted_value = (
+            signal.value if signal.unit in {"", "log_entry"}
+            else f"{signal.value} {signal.unit}".strip()
+        )
         mapped.append(
             ClaimMapping(
                 claim_id=f"CLM-{index:02d}",
-                claim_text=claim["text"],
+                claim_text=claim_text,
                 signal_id=signal.signal_id,
                 source_name=signal.name,
                 source_url=signal.url,
-                extracted_value=f"{signal.value} {signal.unit}".strip(),
+                extracted_value=extracted_value,
                 source_updated_at=signal.source_updated_at,
+                retrieved_at=signal.retrieved_at,
+                age_seconds=signal.age_seconds,
+                freshness_status=freshness_status,
                 is_cached=signal.is_cached,
                 is_stale=signal.is_stale,
             )
         )
     script, _ = redact_text(output["voice_script"])
-    post, _ = redact_text(output["proposed_post"])
+    post_with_provenance = output["proposed_post"] + "\n\nEvidence provenance:\n" + "\n".join(
+        (
+            f"- [{claim.signal_id}] {claim.source_name} ({claim.source_url}); "
+            f"source updated at {claim.source_updated_at}; retrieved at {claim.retrieved_at}; "
+            f"age {claim.age_seconds}s; freshness {claim.freshness_status}."
+        )
+        for claim in mapped
+    )
+    post, _ = redact_text(post_with_provenance)
     return base_brief.model_copy(
         update={
             "status": decision.status,
@@ -189,6 +249,21 @@ def run_agent(
         output = deterministic
         mode = "Rules fallback (guardrail demo)"
         verdict = "FALLBACK"
+    elif (
+        os.getenv("OFFLINE_MODE", "true").strip().lower() != "false"
+        and not demo_mode
+    ):
+        output = deterministic
+        mode = "Rules fallback (offline mode; external providers disabled)"
+        verdict = "FALLBACK"
+        trace.append({
+            "step": 1,
+            "thought_summary": "Offline mode is enabled; only deterministic local rules were used.",
+            "tool_name": None,
+            "arguments": {},
+            "observation": decision.reason,
+            "latency_ms": 0,
+        })
     elif not demo_mode and not live_llm:
         output = deterministic
         mode = "Rules fallback (live LLM disabled for test run)"
@@ -233,6 +308,13 @@ def run_agent(
                 response = recorded["response"]
                 provider = recorded.get("provider", "recording")
                 model = recorded.get("model", "recorded")
+                recorded_output = _rebind_recorded_output(
+                    _parse_output(response),
+                    collection,
+                    recorded.get("source_timestamps", {}),
+                    recorded.get("incident_id", ""),
+                )
+                response = json.dumps(recorded_output, ensure_ascii=True)
                 evidence, trace = collect_tool_evidence(
                     tools, execute_tool, collection.incident_id,
                 )
@@ -332,6 +414,11 @@ def run_agent(
                     json.dumps(output, ensure_ascii=True),
                     provider,
                     model,
+                    {
+                        signal.signal_id: signal.source_updated_at
+                        for signal in collection.signals
+                    },
+                    collection.incident_id,
                 )
         except (ProviderError, ValueError, TypeError, json.JSONDecodeError) as exc:
             output = deterministic

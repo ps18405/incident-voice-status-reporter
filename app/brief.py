@@ -28,6 +28,9 @@ class ClaimMapping(BaseModel):
     source_url: str
     extracted_value: str
     source_updated_at: str
+    retrieved_at: str = ""
+    age_seconds: float = 0.0
+    freshness_status: str = "UNKNOWN"
     is_cached: bool
     is_stale: bool
 
@@ -74,32 +77,42 @@ def build_voice_brief_and_post(
     for idx, sig in enumerate(collection.signals, 1):
         claim_id = f"CLM-{idx:02d}"
         clean_val, _ = redact_text(str(sig.value))
+        freshness_status = "CACHED" if sig.is_cached else "STALE" if sig.is_stale else "FRESH"
+        extracted_value = (
+            clean_val if sig.unit in {"", "log_entry"}
+            else f"{clean_val} {sig.unit}".strip()
+        )
         
         # Build speech-friendly and verified claim
         if sig.source_type == "metric":
             claim_text = (
                 f"Metric {sig.name} is measured at {clean_val}{sig.unit} "
-                f"from dashboard [{sig.signal_id}], updated at {sig.source_updated_at}."
+                f"from source [{sig.signal_id}] ({sig.url}), source updated at {sig.source_updated_at}, "
+                f"retrieved at {sig.retrieved_at}; age {sig.age_seconds}s, freshness {freshness_status}."
             )
         elif sig.source_type == "status_page":
             claim_text = (
                 f"Status page reports {clean_val} "
-                f"from source [{sig.signal_id}], updated at {sig.source_updated_at}."
+                f"from source [{sig.signal_id}] ({sig.url}), source updated at {sig.source_updated_at}, "
+                f"retrieved at {sig.retrieved_at}; age {sig.age_seconds}s, freshness {freshness_status}."
             )
         elif sig.source_type == "health_check":
             claim_text = (
                 f"Health check reports {clean_val} "
-                f"from probe [{sig.signal_id}], updated at {sig.source_updated_at}."
+                f"from probe [{sig.signal_id}] ({sig.url}), source updated at {sig.source_updated_at}, "
+                f"retrieved at {sig.retrieved_at}; age {sig.age_seconds}s, freshness {freshness_status}."
             )
         elif sig.source_type == "log":
             claim_text = (
-                f"Log event from [{sig.signal_id}] records: {clean_val} "
-                f"(source time {sig.source_updated_at})."
+                f"Log event from [{sig.signal_id}] ({sig.url}) records: {clean_val}; "
+                f"source updated at {sig.source_updated_at}, retrieved at {sig.retrieved_at}; "
+                f"age {sig.age_seconds}s, freshness {freshness_status}."
             )
         else:
             claim_text = (
-                f"Signal {sig.name} has value {clean_val} "
-                f"from source [{sig.signal_id}], updated at {sig.source_updated_at}."
+                f"Signal {sig.name} has value {clean_val} from source [{sig.signal_id}] ({sig.url}), "
+                f"source updated at {sig.source_updated_at}, retrieved at {sig.retrieved_at}; "
+                f"age {sig.age_seconds}s, freshness {freshness_status}."
             )
 
         if sig.is_cached:
@@ -112,8 +125,11 @@ def build_voice_brief_and_post(
                 signal_id=sig.signal_id,
                 source_name=sig.name,
                 source_url=sig.url,
-                extracted_value=f"{clean_val} {sig.unit}".strip(),
+                extracted_value=extracted_value,
                 source_updated_at=sig.source_updated_at,
+                retrieved_at=sig.retrieved_at,
+                age_seconds=sig.age_seconds,
+                freshness_status=freshness_status,
                 is_cached=sig.is_cached,
                 is_stale=sig.is_stale,
             )
@@ -146,11 +162,10 @@ def build_voice_brief_and_post(
     post_lines.append("")
     post_lines.append("🔍 **Telemetry Evidence & Dashboard Citations:**")
     for clm in claims:
-        cache_note = " `[CACHED]`" if clm.is_cached else ""
-        stale_note = " `[STALE]`" if clm.is_stale else ""
         post_lines.append(
             f"- **[{clm.signal_id}]** [{clm.source_name}]({clm.source_url}): "
-            f"`{clm.extracted_value}` (source updated: {clm.source_updated_at}){cache_note}{stale_note}"
+            f"`{clm.extracted_value}` (source updated: {clm.source_updated_at}; "
+            f"retrieved: {clm.retrieved_at}; age: {clm.age_seconds}s; freshness: {clm.freshness_status})"
         )
 
     post_lines.append("")

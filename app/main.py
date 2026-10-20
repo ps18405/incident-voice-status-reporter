@@ -8,6 +8,7 @@ import json
 import asyncio
 import logging
 import copy
+import re
 import threading
 import time
 import uuid
@@ -19,7 +20,7 @@ try:
     load_dotenv()
 except ImportError:
     pass
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -27,17 +28,20 @@ from pydantic import BaseModel, Field
 
 from app.brief import build_voice_brief_and_post
 from app.channel import (
+    ChannelPostingError,
     ChannelPostRequest,
     ChannelPostResult,
+    ChannelApprovalConflict,
     fetch_channel_feed,
     process_channel_approval_and_post,
+    invalidate_unposted_approval_for_destination_edit,
     reset_mock_channel,
 )
 from app.collector import IncidentInput, collect_signals
 from app.agent import run_agent
 from app.db import (
     get_agent_run,
-    get_approvals_by_incident,
+    get_approval_by_agent_run,
     get_latest_test_runs,
     init_db,
     record_agent_run,
@@ -48,6 +52,7 @@ from app.redact import redact_text, scan_for_unredacted_pii
 from app.rules import evaluate_decision_rules
 from app.sources import get_mock_scenario_sources, list_available_scenarios
 from app.verify import run_post_verification
+from app.security import require_admin, require_operator
 
 app = FastAPI(
     title="Incident Voice Status Reporter",
@@ -66,7 +71,7 @@ if allowed_origins:
         allow_origins=allowed_origins,
         allow_credentials=False,
         allow_methods=["GET", "POST"],
-        allow_headers=["Content-Type"],
+        allow_headers=["Content-Type", "Authorization"],
     )
 
 logger = logging.getLogger("incident_voice")
@@ -160,7 +165,11 @@ def _allow_agent_request(client_key: str) -> bool:
 
 
 @app.post("/api/collect-and-analyze")
-async def collect_and_analyze(req: AnalyzeRequest, request: Request):
+async def collect_and_analyze(
+    req: AnalyzeRequest,
+    request: Request,
+    identity: Dict[str, str] = Depends(require_operator),
+):
     """Executes Step 1 (Collect), Step 2 (Plan/Correlate), Step 3 (Find), and produces Voice Brief + Proposed Post."""
     if not _allow_agent_request(request.client.host if request.client else "unknown"):
         raise HTTPException(status_code=429, detail="Agent request limit reached. Wait one minute before trying again.")
@@ -199,7 +208,10 @@ async def collect_and_analyze(req: AnalyzeRequest, request: Request):
             collection,
             decision,
             demo_trick=req.demo_trick,
-            live_llm=True,
+            live_llm=(
+                os.getenv("OFFLINE_MODE", "true").strip().lower() == "false"
+                and os.getenv("LIVE_LLM_ENABLED", "false").strip().lower() == "true"
+            ),
             demo_mode=demo_mode_enabled,
             scenario_id=req.scenario_id,
         )
@@ -212,6 +224,7 @@ async def collect_and_analyze(req: AnalyzeRequest, request: Request):
             "scenario_id": inp.scenario_id,
             "test_mode": False,
             "approval_simulated": False,
+            "evidence_source_mode": collection.source_mode,
         }
         report["evidence"] = [signal.model_dump() for signal in collection.signals]
         report["decision"] = decision.model_dump()
@@ -220,6 +233,7 @@ async def collect_and_analyze(req: AnalyzeRequest, request: Request):
         result = {
             "success": True,
             "collection": collection.model_dump(),
+            "evidence_source_mode": collection.source_mode,
             "decision": decision.model_dump(),
             "brief": brief.model_dump(),
             "agent": {
@@ -256,17 +270,29 @@ async def collect_and_analyze(req: AnalyzeRequest, request: Request):
 @app.get("/api/config")
 async def get_public_config():
     """Expose non-secret runtime mode information to the UI."""
-    has_key = bool(os.getenv("LLM_API_KEY", "").strip())
+    offline_mode = os.getenv("OFFLINE_MODE", "true").strip().lower() != "false"
+    live_llm_enabled = (
+        not offline_mode
+        and os.getenv("LIVE_LLM_ENABLED", "false").strip().lower() == "true"
+    )
     return {
-        "mode": "LLM agent" if has_key else "Rules fallback",
-        "provider": os.getenv("LLM_PROVIDER", "gemini"),
-        "model": os.getenv("LLM_MODEL", "gemini-2.5-flash") if has_key else "rules",
-        "simulated_data": True,
+        "mode": "Provider offline" if offline_mode else (
+            "LLM agent enabled" if live_llm_enabled else "Rules fallback"
+        ),
+        "provider": os.getenv("LLM_PROVIDER", "gemini") if live_llm_enabled else "rules",
+        "model": os.getenv("LLM_MODEL", "gemini-2.5-flash") if live_llm_enabled else "rules",
+        "simulated_data": os.getenv("EVIDENCE_SOURCE", "fixtures").strip().lower() != "grafana",
+        "evidence_source_mode": os.getenv("EVIDENCE_SOURCE", "fixtures").strip().lower(),
+        "offline_mode": offline_mode,
+        "live_llm_enabled": live_llm_enabled,
     }
 
 
 @app.get("/api/agent-runs/{run_id}")
-async def get_agent_run_endpoint(run_id: int):
+async def get_agent_run_endpoint(
+    run_id: int,
+    identity: Dict[str, str] = Depends(require_operator),
+):
     report = get_agent_run(run_id)
     if report is None:
         raise HTTPException(status_code=404, detail="Agent run was not found.")
@@ -274,37 +300,43 @@ async def get_agent_run_endpoint(run_id: int):
 
 
 @app.get("/api/agent-runs/{run_id}/export")
-async def export_agent_run(run_id: int):
+async def export_agent_run(
+    run_id: int,
+    identity: Dict[str, str] = Depends(require_operator),
+):
     report = get_agent_run(run_id)
     if report is None:
         raise HTTPException(status_code=404, detail="Agent run was not found.")
     incident_id = report.get("input", {}).get("incident_id") or report.get("brief", {}).get("incident_id")
     if "approval" not in report:
-        approvals = get_approvals_by_incident(incident_id)
-        report["approval"] = approvals[0] if approvals else {
+        approval = get_approval_by_agent_run(run_id)
+        report["approval"] = approval if approval else {
             "status": "PENDING",
             "approval_simulated": False,
         }
     if "post" not in report:
         report["post"] = None
     if report["post"] is None:
-        proposed_text = report.get("brief", {}).get("proposed_channel_post", "")
+        approval = get_approval_by_agent_run(run_id)
         report["post"] = next(
             (
                 post for post in fetch_channel_feed()
-                if post["incident_id"] == incident_id and post["message"] == proposed_text
+                if approval
+                and approval.get("status") in {"APPROVED", "POST_FAILED"}
+                and post["idempotency_key"] == approval.get("idempotency_key")
             ),
             None,
         )
     if "verification" not in report:
+        approval = get_approval_by_agent_run(run_id)
         report["verification"] = (
             run_post_verification(
                 incident_id,
-                report["post"]["message"],
+                approval["proposed_message"],
                 report["post"]["id"],
                 agent_run_id=run_id,
             ).model_dump()
-            if report["post"] else None
+            if report["post"] and approval else None
         )
     return JSONResponse(
         content=report,
@@ -313,33 +345,87 @@ async def export_agent_run(run_id: int):
 
 
 @app.post("/api/approve", response_model=ChannelPostResult)
-async def submit_approval(req: ChannelPostRequest):
+async def submit_approval(
+    req: ChannelPostRequest,
+    identity: Dict[str, str] = Depends(require_operator),
+):
     """Executes Step 4 (Act with HUMAN APPROVAL).
     
     If Approved: Posts update to channel with idempotency key guard.
     If Rejected: Stores rejection and posts nothing.
     """
-    if req.agent_run_id is not None:
-        run_report = get_agent_run(req.agent_run_id)
-        if run_report is None or (
-            run_report.get("input", {}).get("incident_id")
-            != req.incident_id
-        ):
-            raise HTTPException(status_code=400, detail="Agent run does not match this incident.")
-    result = process_channel_approval_and_post(req)
-    if req.agent_run_id is not None:
-        approvals = get_approvals_by_incident(req.incident_id)
-        posts = [post for post in fetch_channel_feed() if post["id"] == result.post_id]
-        update_agent_run_report(
+    if req.agent_run_id is None:
+        raise HTTPException(status_code=400, detail="A matching agent run is required for approval.")
+    run_report = get_agent_run(req.agent_run_id)
+    if run_report is None or run_report.get("input", {}).get("incident_id") != req.incident_id:
+        raise HTTPException(status_code=400, detail="Agent run does not match this incident.")
+    brief = run_report.get("brief", {})
+    if req.destination != brief.get("destination"):
+        approval = invalidate_unposted_approval_for_destination_edit(
             req.agent_run_id,
-            {
-                "approval": approvals[0] if approvals else {
-                    "status": req.approval_decision,
-                    "approval_simulated": False,
-                },
-                "post": posts[0] if posts else None,
-            },
+            req.destination,
         )
+        if approval and approval["status"] == "INVALIDATED":
+            update_agent_run_report(req.agent_run_id, {
+                "approval": approval,
+                "post": None,
+                "verification": None,
+            })
+        raise HTTPException(status_code=400, detail="Approval destination does not match the agent run.")
+    if scan_for_unredacted_pii(req.message):
+        raise HTTPException(status_code=400, detail="Approval message contains sensitive data.")
+    if req.approval_decision == "APPROVED":
+        if run_report.get("guardrail_verdict") not in {"PASS", "FALLBACK"}:
+            raise HTTPException(status_code=400, detail="Agent output is not cleared for posting.")
+        if not req.message.strip():
+            raise HTTPException(status_code=400, detail="Approved message must not be empty.")
+        valid_signal_ids = {
+            signal.get("signal_id")
+            for signal in run_report.get("evidence", [])
+            if isinstance(signal, dict)
+        }
+        cited_ids = set(re.findall(r"\[(SIG-[A-Z0-9-]+)\]", req.message))
+        if not cited_ids or not cited_ids.issubset(valid_signal_ids):
+            raise HTTPException(status_code=400, detail="Approved message must cite evidence from this agent run.")
+    try:
+        result = process_channel_approval_and_post(req, approved_by=identity["role"])
+    except ChannelApprovalConflict as exc:
+        approval = get_approval_by_agent_run(req.agent_run_id)
+        linked_post = next(
+            (
+                post for post in fetch_channel_feed()
+                if approval and post["idempotency_key"] == approval["idempotency_key"]
+            ),
+            None,
+        )
+        update_agent_run_report(req.agent_run_id, {
+            "approval": approval or {"status": "PENDING", "approval_simulated": False},
+            "post": linked_post,
+        })
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ChannelPostingError as exc:
+        logger.exception("Approved mock-channel post failed incident_id=%s", req.incident_id)
+        update_agent_run_report(req.agent_run_id, {
+            "approval": {
+                **(get_approval_by_agent_run(req.agent_run_id) or {}),
+                "approval_simulated": False,
+            },
+            "post": None,
+            "verification": None,
+        })
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    approval = get_approval_by_agent_run(req.agent_run_id)
+    posts = [post for post in fetch_channel_feed() if post["id"] == result.post_id]
+    update_agent_run_report(
+        req.agent_run_id,
+        {
+            "approval": approval if approval else {
+                "status": req.approval_decision,
+                "approval_simulated": False,
+            },
+            "post": posts[0] if posts else None,
+        },
+    )
     return result
 
 
@@ -347,11 +433,14 @@ class VerifyRequest(BaseModel):
     incident_id: str
     approved_text: str
     post_id: Optional[int] = None
-    agent_run_id: Optional[int] = None
+    agent_run_id: int
 
 
 @app.post("/api/verify")
-async def verify_post(req: VerifyRequest):
+async def verify_post(
+    req: VerifyRequest,
+    identity: Dict[str, str] = Depends(require_operator),
+):
     """Executes Step 5 (Check the actual result).
     
     Independently re-reads the channel and verifies existence, content fidelity,
@@ -373,13 +462,13 @@ async def verify_post(req: VerifyRequest):
 
 
 @app.get("/api/channel")
-async def get_channel_feed():
+async def get_channel_feed(identity: Dict[str, str] = Depends(require_operator)):
     """Retrieve all posts published to the mock team channel."""
     return fetch_channel_feed()
 
 
 @app.post("/api/reset-channel")
-async def reset_channel():
+async def reset_channel(identity: Dict[str, str] = Depends(require_admin)):
     """Reset the mock channel for testing."""
     reset_mock_channel()
     return {"message": "Channel and approval ledger cleared."}
@@ -390,7 +479,10 @@ class RunTestsRequest(BaseModel):
 
 
 @app.post("/api/run-tests")
-async def run_official_tests(req: Optional[RunTestsRequest] = None):
+async def run_official_tests(
+    req: Optional[RunTestsRequest] = None,
+    identity: Dict[str, str] = Depends(require_admin),
+):
     """Run the six synthetic scenarios through collection, agent, approval, and verification."""
     assertions = {
         "TC1": ("DEGRADED", "includes timestamps and signal citations"),
@@ -417,7 +509,11 @@ async def run_official_tests(req: Optional[RunTestsRequest] = None):
                 run_agent,
                 collection,
                 decision,
-                live_llm=bool(req and req.live_llm),
+                live_llm=(
+                    bool(req and req.live_llm)
+                    and os.getenv("OFFLINE_MODE", "true").strip().lower() == "false"
+                    and os.getenv("LIVE_LLM_ENABLED", "false").strip().lower() == "true"
+                ),
                 demo_mode=(
                     not bool(req and req.live_llm)
                     and os.getenv("DEMO_MODE", "false").strip().lower() == "true"
@@ -556,7 +652,7 @@ async def run_official_tests(req: Optional[RunTestsRequest] = None):
 
 
 @app.get("/api/test-runs")
-async def get_test_runs():
+async def get_test_runs(identity: Dict[str, str] = Depends(require_operator)):
     """Retrieve historical/latest test runs."""
     return get_latest_test_runs()
 
@@ -567,7 +663,10 @@ class LLMHookRequest(BaseModel):
 
 
 @app.post("/api/llm-summary-hook")
-async def optional_llm_summary_hook(req: LLMHookRequest):
+async def optional_llm_summary_hook(
+    req: LLMHookRequest,
+    identity: Dict[str, str] = Depends(require_operator),
+):
     """Retain the prior API path without pretending it invokes an LLM."""
     if not req.enabled:
         return {

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime, timedelta, timezone
 from typing import List
 import pytest
 from fastapi.testclient import TestClient
@@ -27,9 +28,16 @@ from app.channel import (
 )
 from app.collector import IncidentInput, SignalCollectionResult, SignalModel, collect_signals
 from app.agent import run_agent
-from app.db import get_all_posts, get_connection, init_db, record_agent_run
+from app.db import (
+    get_all_posts,
+    get_connection,
+    init_db,
+    record_agent_run,
+    update_agent_run_report,
+)
 from app.main import app
 from app.redact import scan_for_unredacted_pii
+from app.redact import redact_text
 from app.rules import evaluate_decision_rules
 from app.verify import run_post_verification
 
@@ -71,6 +79,14 @@ def test_tc1_status_update():
     # Also verify proposed channel post contains citations for every signal
     for clm in brief.claims:
         assert f"[{clm.signal_id}]" in brief.proposed_channel_post
+        assert clm.source_url.startswith("https://")
+        assert clm.source_updated_at != "Unavailable"
+        assert clm.retrieved_at == collection.retrieved_at
+        assert clm.freshness_status == "FRESH"
+        assert clm.retrieved_at in clm.claim_text
+        assert clm.source_updated_at in clm.claim_text
+        assert clm.source_url in clm.claim_text
+        assert f"retrieved: {clm.retrieved_at}" in brief.proposed_channel_post
 
     # 3. State is DEGRADED when error rate > 1% with fresh signals
     error_signal = next(s for s in collection.signals if "err" in s.signal_id.lower() or "error" in s.name.lower())
@@ -96,7 +112,10 @@ def test_tc2_cached_dashboard():
         scenario_id="TC2",
     )
     collection = collect_signals(inp)
-    assert any(s.is_cached for s in collection.signals), "TC2 must contain at least one cached signal"
+    cached_signals = [s for s in collection.signals if s.is_cached]
+    assert cached_signals, "TC2 must contain at least one cached signal"
+    assert all(s.age_seconds > 300 for s in cached_signals)
+    assert all(s.retrieved_at == collection.retrieved_at for s in cached_signals)
 
     decision = evaluate_decision_rules(collection)
     brief = build_voice_brief_and_post(collection, decision)
@@ -114,9 +133,95 @@ def test_tc2_cached_dashboard():
     )
 
 
+def test_tc2_http_200_with_old_source_timestamp_is_stale_not_recovered(monkeypatch):
+    from app import collector
+
+    now = datetime(2026, 10, 20, 12, 0, tzinfo=timezone.utc)
+    original = collector.get_mock_scenario_sources
+
+    def old_http_200_source(scenario_id, base_time=None):
+        scenario = original("RECOVERED", base_time=base_time)
+        metric = next(
+            signal for signal in scenario["signals"]
+            if signal["signal_id"] == "SIG-METRIC-ERR"
+        )
+        metric["source_updated_at"] = (now - timedelta(seconds=600)).isoformat()
+        metric["is_cached"] = False
+        metric["raw_payload"]["http_status"] = 200
+        return scenario
+
+    monkeypatch.setattr(collector, "get_mock_scenario_sources", old_http_200_source)
+    collection = collect_signals(
+        IncidentInput(
+            incident_id="INC-TC2-HTTP-200-STALE",
+            scope="Checking stale metrics with a successful transport response",
+            dashboards=["https://grafana.internal.mock/d/checkout-metrics"],
+            scenario_id="RECOVERED",
+        ),
+        base_time=now,
+        save_to_db=False,
+    )
+    error_signal = next(s for s in collection.signals if s.signal_id == "SIG-METRIC-ERR")
+    decision = evaluate_decision_rules(collection, save_to_db=False)
+
+    assert error_signal.raw_payload["http_status"] == 200
+    assert error_signal.age_seconds == 600
+    assert error_signal.is_stale
+    assert not error_signal.is_cached
+    assert decision.status == "UNCERTAIN"
+    assert "stale" in decision.reason.lower()
+
+
 # ---------------------------------------------------------------------------
 # 3. TC3 Customer data in logs
 # ---------------------------------------------------------------------------
+def test_redacts_credentials_and_does_not_return_secret_values():
+    raw = (
+        "Authorization: Bearer abc1234567890.secret "
+        "api_key=sk-test_abcdefghijklmnop "
+        "access_token=ghp_abcdefghijklmnop123456"
+    )
+
+    sanitized, redactions = redact_text(raw)
+
+    assert "abc1234567890.secret" not in sanitized
+    assert "sk-test_abcdefghijklmnop" not in sanitized
+    assert "ghp_abcdefghijklmnop123456" not in sanitized
+    assert "[REDACTED_TOKEN]" in sanitized
+    assert all("matched" not in item for item in redactions)
+    assert not scan_for_unredacted_pii(sanitized)
+
+
+def test_context_aware_secret_redaction():
+    secrets = [
+        "auth-secret-value",
+        "signed-value with spaces",
+        "header-secret-value",
+        "api-secret-value",
+        "access-secret-value",
+        "refresh-secret-value",
+        "client-secret-value",
+        "password-secret-value",
+    ]
+    raw = (
+        "Authorization: Bearer auth-secret-value; "
+        "Authorization: Signature signed-value with spaces; "
+        "X-API-Key: header-secret-value; "
+        "api_key=api-secret-value; "
+        "access_token=access-secret-value; "
+        "refresh_token=refresh-secret-value; "
+        "client_secret=client-secret-value; "
+        "password=password-secret-value"
+    )
+
+    sanitized, redactions = redact_text(raw)
+
+    assert all(secret not in sanitized for secret in secrets)
+    assert sanitized.count("[REDACTED_TOKEN]") == len(secrets)
+    assert not scan_for_unredacted_pii(sanitized)
+    assert all("matched" not in item for item in redactions)
+
+
 def test_tc3_customer_data_in_logs():
     """TC3 Customer data in logs:
     - fake emails, phone numbers and a card number are replaced by [REDACTED_*] tokens
@@ -227,6 +332,14 @@ def test_tc4_health_check_failing():
     # State is UNCERTAIN
     assert decision.status == "UNCERTAIN", f"Expected UNCERTAIN status, got {decision.status}"
     assert decision.recovery_uncertain_warning is True
+    assert "0.2%" in decision.reason
+    assert "SIG-METRIC-ERR" in decision.reason
+    assert "503" in decision.reason
+    assert "SIG-HLTH-01" in decision.reason
+    retained_signals = {item["signal_id"]: item for item in decision.evidence_summary}
+    assert retained_signals["SIG-METRIC-ERR"]["value"] == "0.2"
+    assert retained_signals["SIG-STAT-01"]["value"] == "Operational"
+    assert retained_signals["SIG-HLTH-01"]["value"].startswith("Failing")
 
     # Brief says "recovery uncertain"
     assert "recovery uncertain" in brief.voice_script.lower(), (
@@ -309,6 +422,69 @@ def test_missing_evidence():
     decision_metric = evaluate_decision_rules(health_only_collection, save_to_db=False)
     assert decision_metric.status == "UNCERTAIN"
     assert decision_metric.uncertainty_flag is True
+
+
+def test_missing_source_timestamp_is_not_invented(monkeypatch):
+    from app import collector
+
+    original = collector.get_mock_scenario_sources
+
+    def no_source_timestamp(scenario_id, base_time=None):
+        data = original(scenario_id, base_time)
+        data["signals"][0].pop("source_updated_at", None)
+        return data
+
+    monkeypatch.setattr(collector, "get_mock_scenario_sources", no_source_timestamp)
+    collection = collector.collect_signals(
+        IncidentInput(
+            incident_id="INC-MISSING-SOURCE-TIME",
+            scope="Testing unavailable source timestamp",
+            dashboards=["https://grafana.internal.mock/d/checkout-metrics"],
+            scenario_id="TC1",
+        ),
+        base_time=datetime(2026, 10, 20, tzinfo=timezone.utc),
+        save_to_db=False,
+    )
+    signal = next(item for item in collection.signals if item.signal_id == "SIG-METRIC-ERR")
+    decision = evaluate_decision_rules(collection, save_to_db=False)
+    brief = build_voice_brief_and_post(collection, decision)
+
+    assert signal.source_updated_at == "Unavailable"
+    assert signal.is_stale
+    assert decision.status == "UNCERTAIN"
+    assert "updated at Unavailable" in brief.voice_script
+
+
+def test_future_source_timestamp_is_not_treated_as_fresh(monkeypatch):
+    from app import collector
+
+    original = collector.get_mock_scenario_sources
+    retrieval_time = datetime(2026, 10, 20, 12, 0, tzinfo=timezone.utc)
+
+    def future_source_timestamp(scenario_id, base_time=None):
+        data = original(scenario_id, base_time)
+        data["signals"][0]["source_updated_at"] = (
+            retrieval_time + timedelta(seconds=60)
+        ).isoformat()
+        return data
+
+    monkeypatch.setattr(collector, "get_mock_scenario_sources", future_source_timestamp)
+    collection = collector.collect_signals(
+        IncidentInput(
+            incident_id="INC-FUTURE-SOURCE-TIME",
+            scope="Testing a source timestamp later than retrieval",
+            dashboards=["https://grafana.internal.mock/d/checkout-metrics"],
+            scenario_id="TC1",
+        ),
+        base_time=retrieval_time,
+        save_to_db=False,
+    )
+    signal = next(item for item in collection.signals if item.signal_id == "SIG-METRIC-ERR")
+    decision = evaluate_decision_rules(collection, save_to_db=False)
+
+    assert signal.source_updated_at == "Unavailable"
+    assert signal.is_stale
+    assert decision.status == "UNCERTAIN"
 
 
 # ---------------------------------------------------------------------------
@@ -411,7 +587,10 @@ def test_verification(monkeypatch):
     brief = build_voice_brief_and_post(collection, decision)
     monkeypatch.delenv("LLM_API_KEY", raising=False)
     agent_result = run_agent(collection, decision)
-    record_agent_run(inp.incident_id, agent_result.model_dump())
+    run_report = agent_result.model_dump()
+    run_report["input"] = {"incident_id": inp.incident_id}
+    run_report["evidence"] = [signal.model_dump() for signal in collection.signals]
+    run_id = record_agent_run(inp.incident_id, run_report)
 
     # Approve and publish
     approve_req = ChannelPostRequest(
@@ -419,12 +598,15 @@ def test_verification(monkeypatch):
         destination="#incident-response",
         message=brief.proposed_channel_post,
         approval_decision="APPROVED",
+        agent_run_id=run_id,
     )
     post_res = process_channel_approval_and_post(approve_req)
     assert post_res.success is True
 
     # 1. Run independent verification on clean approved post
-    report_pass = run_post_verification(inp.incident_id, brief.proposed_channel_post, post_res.post_id)
+    report_pass = run_post_verification(
+        inp.incident_id, brief.proposed_channel_post, post_res.post_id, agent_run_id=run_id,
+    )
     assert report_pass.overall_status == "PASS"
 
     # Matches approved text
@@ -439,13 +621,36 @@ def test_verification(monkeypatch):
 
     # 2. Failed check stays visible when text is altered
     tampered_text = brief.proposed_channel_post + "\n[UNAUTHORIZED_MODIFICATION]"
-    report_tampered = run_post_verification(inp.incident_id, tampered_text, post_res.post_id)
+    report_tampered = run_post_verification(
+        inp.incident_id, tampered_text, post_res.post_id, agent_run_id=run_id,
+    )
     assert report_tampered.overall_status == "FAIL"
 
     failed_fidelity = next(c for c in report_tampered.checks if c.name == "Content Fidelity to Approved Version")
     assert failed_fidelity.status == "FAIL"
     assert "Mismatch detected" in failed_fidelity.observed
     assert failed_fidelity in report_tampered.checks  # Check stays visible
+
+    # Evidence from another run for the same incident must not validate a claim.
+    run_report["evidence"] = [
+        signal.model_dump()
+        for signal in collection.signals
+        if signal.signal_id != "SIG-METRIC-ERR"
+    ]
+    update_agent_run_report(run_id, {"evidence": run_report["evidence"]})
+    report_wrong_run_evidence = run_post_verification(
+        inp.incident_id,
+        brief.proposed_channel_post,
+        post_res.post_id,
+        agent_run_id=run_id,
+    )
+    assert report_wrong_run_evidence.overall_status == "FAIL"
+    run_evidence_check = next(
+        c for c in report_wrong_run_evidence.checks
+        if c.name == "Claims Linked to Dashboard IDs"
+    )
+    assert run_evidence_check.status == "FAIL"
+    assert "SIG-METRIC-ERR" in run_evidence_check.observed
 
     # 3. Failed check stays visible when post does not exist
     report_missing_post = run_post_verification("INC-GHOST-ID", "some text")
@@ -511,6 +716,7 @@ def test_api_smoke_test(client: TestClient):
             "destination": "#incident-response",
             "message": proposed_post,
             "approval_decision": "APPROVED",
+            "agent_run_id": data["agent"]["run_id"],
         },
     )
     assert res_approve.status_code == 200
@@ -525,6 +731,7 @@ def test_api_smoke_test(client: TestClient):
             "incident_id": "INC-SMOKE-01",
             "approved_text": proposed_post,
             "post_id": post_id,
+            "agent_run_id": data["agent"]["run_id"],
         },
     )
     assert res_verify.status_code == 200

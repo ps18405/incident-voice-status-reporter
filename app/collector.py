@@ -4,6 +4,7 @@ and applies PII redaction before returning.
 """
 from __future__ import annotations
 
+import os
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
@@ -11,6 +12,7 @@ from pydantic import BaseModel, Field
 from app.db import save_incident, save_signals
 from app.redact import redact_data_structure, redact_text
 from app.sources import get_mock_scenario_sources
+from app.source_adapters import fetch_grafana_metrics
 
 
 class IncidentInput(BaseModel):
@@ -32,6 +34,9 @@ class SignalModel(BaseModel):
     age_seconds: float
     is_cached: bool
     is_stale: bool
+    source_id: str = ""
+    evidence_origin: str = "synthetic_fixture"
+    retrieval_status: str = "success"
     raw_payload: Dict[str, Any] = {}
     redacted_items_count: int = 0
 
@@ -46,6 +51,7 @@ class SignalCollectionResult(BaseModel):
     stale_count: int
     cached_count: int
     redactions_count: int
+    source_mode: str = "fixtures"
 
 
 def validate_incident_input(data: Dict[str, Any]) -> IncidentInput:
@@ -60,12 +66,24 @@ def collect_signals(
 ) -> SignalCollectionResult:
     """Collect signals from mock sources, compute freshness and age, redact logs, and store in DB."""
     retrieval_dt = base_time or datetime.now(timezone.utc)
+    if retrieval_dt.tzinfo is None or retrieval_dt.utcoffset() is None:
+        retrieval_dt = retrieval_dt.replace(tzinfo=timezone.utc)
+    else:
+        retrieval_dt = retrieval_dt.astimezone(timezone.utc)
     retrieval_iso = retrieval_dt.isoformat()
 
-    # Retrieve mock sources for the requested scenario
-    scenario_data = get_mock_scenario_sources(incident_input.scenario_id or "TC1", base_time=retrieval_dt)
-    raw_signals = list(scenario_data.get("signals", []))
-    if not any(item.get("signal_id") == "SIG-METRIC-SAT" for item in raw_signals):
+    source_mode = os.getenv("EVIDENCE_SOURCE", "fixtures").strip().lower()
+    if source_mode == "grafana":
+        raw_signals = fetch_grafana_metrics(retrieval_dt)
+    elif source_mode == "fixtures":
+        scenario_data = get_mock_scenario_sources(
+            incident_input.scenario_id or "TC1",
+            base_time=retrieval_dt,
+        )
+        raw_signals = list(scenario_data.get("signals", []))
+    else:
+        raise ValueError("EVIDENCE_SOURCE must be either 'fixtures' or 'grafana'.")
+    if source_mode == "fixtures" and not any(item.get("signal_id") == "SIG-METRIC-SAT" for item in raw_signals):
         raw_signals.append(
             {
                 "signal_id": "SIG-METRIC-SAT",
@@ -79,7 +97,7 @@ def collect_signals(
                 "raw_payload": {"metric": "worker_pool_saturation", "threshold": 85, "current": 72.0},
             }
         )
-    if not any(item.get("source_type") == "change" for item in raw_signals):
+    if source_mode == "fixtures" and not any(item.get("source_type") == "change" for item in raw_signals):
         raw_signals.append(
             {
                 "signal_id": "SIG-CHANGE-01",
@@ -101,12 +119,20 @@ def collect_signals(
 
     for item in raw_signals:
         # Calculate signal age
-        source_upd = item["source_updated_at"]
+        source_upd = item.get("source_updated_at")
         try:
+            if not isinstance(source_upd, str) or not source_upd.strip():
+                raise ValueError("source timestamp missing")
             upd_dt = datetime.fromisoformat(source_upd.replace("Z", "+00:00"))
-            age_sec = max(0.0, (retrieval_dt - upd_dt).total_seconds())
+            if upd_dt.tzinfo is None or upd_dt.utcoffset() is None:
+                raise ValueError("source timestamp has no timezone")
+            upd_dt = upd_dt.astimezone(timezone.utc)
+            if upd_dt > retrieval_dt:
+                raise ValueError("source timestamp is in the future")
+            age_sec = (retrieval_dt - upd_dt).total_seconds()
         except (TypeError, ValueError):
             age_sec = 1_000_000_000.0
+            source_upd = "Unavailable"
 
         is_cached = bool(item.get("is_cached", False))
         is_stale = age_sec > 300.0 or is_cached  # Older than 5 minutes or cached
@@ -136,6 +162,7 @@ def collect_signals(
                 source_type=item["source_type"],
                 name=item["name"],
                 url=item["url"],
+                source_id=item.get("source_id", item["url"]),
                 value=clean_val,
                 unit=item.get("unit", ""),
                 source_updated_at=source_upd,
@@ -143,6 +170,8 @@ def collect_signals(
                 age_seconds=round(age_sec, 1),
                 is_cached=is_cached,
                 is_stale=is_stale,
+                evidence_origin=item.get("evidence_origin", "synthetic_fixture"),
+                retrieval_status=item.get("retrieval_status", "success"),
                 raw_payload=clean_payload,
                 redacted_items_count=item_redactions,
             )
@@ -162,6 +191,7 @@ def collect_signals(
         stale_count=stale_count,
         cached_count=cached_count,
         redactions_count=total_redactions,
+        source_mode=source_mode,
     )
 
     if save_to_db:

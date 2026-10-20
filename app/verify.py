@@ -15,9 +15,8 @@ from pydantic import BaseModel
 
 from app.db import (
     get_all_posts,
+    get_approval_by_agent_run,
     get_agent_run,
-    get_latest_agent_run_for_incident,
-    get_signals_by_incident,
 )
 from app.redact import scan_for_unredacted_pii
 
@@ -52,6 +51,10 @@ def run_post_verification(
     """Execute rigorous independent verification of channel post."""
     now_iso = datetime.now(timezone.utc).isoformat()
     checks: List[CheckItem] = []
+    approval = (
+        get_approval_by_agent_run(agent_run_id)
+        if agent_run_id is not None else None
+    )
 
     # Retrieve all posts from channel
     all_posts = get_all_posts()
@@ -64,7 +67,16 @@ def run_post_verification(
                 target_post = p
                 break
     elif matching_posts:
-        target_post = matching_posts[0]  # Most recent
+        if approval:
+            target_post = next(
+                (
+                    post for post in matching_posts
+                    if post["idempotency_key"] == approval["idempotency_key"]
+                ),
+                None,
+            )
+        else:
+            target_post = matching_posts[0]  # Most recent
 
     # Check 1: Post exists in channel
     if target_post:
@@ -98,11 +110,32 @@ def run_post_verification(
             checks=checks,
         )
 
+    approval_matches = bool(
+        approval
+        and approval.get("status") == "APPROVED"
+        and approval.get("incident_id") == incident_id
+        and approval.get("proposed_message") == approved_text
+        and approval.get("destination") == target_post["destination"]
+        and approval.get("idempotency_key") == target_post["idempotency_key"]
+    )
+    if agent_run_id is not None:
+        checks.append(
+            CheckItem(
+                name="Run-bound Approval",
+                status="PASS" if approval_matches else "FAIL",
+                expected="Exact content and destination authorized by this run's persisted approval",
+                observed=(
+                    "Post matches the persisted approval for this run."
+                    if approval_matches
+                    else "No matching approved action is bound to this run and post."
+                ),
+                details="Approval state is checked independently of the submitted verification text.",
+            )
+        )
+
     agent_run = get_agent_run(agent_run_id) if agent_run_id is not None else None
     if agent_run and agent_run.get("input", {}).get("incident_id") != incident_id:
         agent_run = None
-    if agent_run_id is None:
-        agent_run = get_latest_agent_run_for_incident(incident_id)
     verdict = agent_run["guardrail_verdict"] if agent_run else "MISSING"
     acceptable_verdict = verdict in {"PASS", "FALLBACK"}
     checks.append(
@@ -122,9 +155,7 @@ def run_post_verification(
     posted_content = target_post["message"]
 
     # Check 2: Text equals approved text exactly
-    norm_posted = posted_content.strip()
-    norm_approved = approved_text.strip()
-    if norm_posted == norm_approved:
+    if posted_content == approved_text:
         checks.append(
             CheckItem(
                 name="Content Fidelity to Approved Version",
@@ -135,7 +166,7 @@ def run_post_verification(
             )
         )
     else:
-        diff_len = abs(len(norm_posted) - len(norm_approved))
+        diff_len = abs(len(posted_content) - len(approved_text))
         checks.append(
             CheckItem(
                 name="Content Fidelity to Approved Version",
@@ -146,10 +177,13 @@ def run_post_verification(
             )
         )
 
-    # Check 3: Every claim links to a real dashboard signal ID
-    # Retrieve true signals from DB for this incident
-    db_signals = get_signals_by_incident(incident_id)
-    known_signal_ids = {s["signal_id"] for s in db_signals}
+    # Check 3: Every claim links to evidence collected for this exact agent run.
+    run_evidence = agent_run.get("evidence", []) if agent_run else []
+    known_signal_ids = {
+        signal["signal_id"]
+        for signal in run_evidence
+        if isinstance(signal, dict) and isinstance(signal.get("signal_id"), str)
+    }
 
     found_signal_ids = set(SIGNAL_ID_PATTERN.findall(posted_content))
     agent_claims = agent_run.get("claims", []) if agent_run else []
@@ -163,9 +197,13 @@ def run_post_verification(
             CheckItem(
                 name="Claims Linked to Dashboard IDs",
                 status="FAIL",
-                expected="Every claim cites at least one verified signal ID e.g. [SIG-xxx]",
-                observed="Zero signal IDs found in the post",
-                details="The post lacks dashboard citations.",
+                expected="Every claim cites a signal ID from this agent run e.g. [SIG-xxx]",
+                observed=(
+                    "Zero signal IDs found in the post"
+                    if not found_signal_ids
+                    else "Agent run is missing its evidence snapshot"
+                ),
+                details="The post lacks citations or this run has no evidence snapshot.",
             )
         )
     else:
@@ -176,9 +214,9 @@ def run_post_verification(
                 CheckItem(
                     name="Claims Linked to Dashboard IDs",
                     status="PASS",
-                    expected=f"All cited signal IDs must exist in evidence store ({len(known_signal_ids)} valid)",
+                    expected=f"All cited signal IDs must exist in this run's evidence snapshot ({len(known_signal_ids)} valid)",
                     observed=f"All {len(found_signal_ids)} cited IDs are verified: {', '.join(sorted(found_signal_ids))}",
-                    details="Each telemetry claim is traceable to an underlying dashboard source.",
+                    details="Each cited telemetry claim is traceable to evidence collected for this agent run.",
                 )
             )
         else:
@@ -191,9 +229,9 @@ def run_post_verification(
                 CheckItem(
                     name="Claims Linked to Dashboard IDs",
                     status="FAIL",
-                    expected="Every agent claim is cited in the approved post and exists in evidence",
+                    expected="Every agent claim is cited in the post and exists in this run's evidence snapshot",
                     observed="; ".join(issue),
-                    details="A claim references phantom evidence or was omitted from the posted text.",
+                    details="A claim references evidence outside this run or was omitted from the posted text.",
                 )
             )
 

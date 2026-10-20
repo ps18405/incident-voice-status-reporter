@@ -5,9 +5,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Incident Voice Status Reporter | SRE Command Center</title>
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
     :root {
       --bg-primary: #0b0f19;
@@ -718,6 +715,7 @@
     <div class="header-meta">
       <button class="btn" onclick="toggleTheme()" type="button">Light / Dark</button>
       <span class="tag tag-purple" id="agentModeBadge">Loading mode...</span>
+      <span class="tag tag-blue" id="evidenceSourceBadge">Evidence source loading...</span>
       <span class="tag tag-amber" id="cachedResultBadge" hidden>Cached result</span>
       <span class="clock-tag mono" id="modelName">rules</span>
       <span class="tag tag-blue">All data is simulated</span>
@@ -725,6 +723,13 @@
       <span class="clock-tag mono" id="liveClock">--:--:-- IST / --:--:-- UTC</span>
     </div>
   </header>
+  <section aria-label="Operator authentication" style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin:8px 0 16px;">
+    <label for="operatorToken" class="tag">Operator/admin access token</label>
+    <input id="operatorToken" type="password" autocomplete="off" placeholder="Enter provisioned token" style="max-width:320px;">
+    <button class="btn" type="button" onclick="applyOperatorToken()">Connect</button>
+    <button class="btn" type="button" onclick="clearOperatorToken()">Disconnect</button>
+    <span id="authStatus" role="status" aria-live="polite">Authentication required for incident data and actions.</span>
+  </section>
   <nav aria-label="Console sections" style="display:flex; gap:12px; flex-wrap:wrap; margin:-8px 0 16px;">
     <a href="#console">Console</a>
     <a href="#agentTracePanel">Agent Trace</a>
@@ -1080,6 +1085,29 @@
     let currentSpeakingUtterance = null;
     let lastPostedId = null;
     let previousProposedPost = '';
+    let operatorAccessToken = '';
+    let offlineMode = true;
+
+    const nativeFetch = window.fetch.bind(window);
+    window.fetch = (input, init = {}) => {
+      const headers = new Headers(init.headers || (input instanceof Request ? input.headers : undefined));
+      if (operatorAccessToken) headers.set('Authorization', 'Bearer ' + operatorAccessToken);
+      return nativeFetch(input, {...init, headers});
+    };
+
+    function applyOperatorToken() {
+      operatorAccessToken = document.getElementById('operatorToken').value.trim();
+      document.getElementById('operatorToken').value = '';
+      document.getElementById('authStatus').textContent =
+        operatorAccessToken ? 'Token set for this page session; sensitive requests will validate it.' : 'Enter an access token.';
+      loadChannelFeed();
+    }
+
+    function clearOperatorToken() {
+      operatorAccessToken = '';
+      document.getElementById('authStatus').textContent = 'Disconnected. Authentication required for incident data and actions.';
+      document.getElementById('channelFeedBox').textContent = 'Connect with an operator token to view the mock channel feed.';
+    }
 
     function toggleTheme() {
       document.body.classList.toggle('light-theme');
@@ -1212,6 +1240,11 @@
     }
 
     function toggleDictation() {
+      if (offlineMode) {
+        document.getElementById('dictationStatus').textContent =
+          'Voice dictation is disabled in offline mode. Type or paste the scope instead.';
+        return;
+      }
       if (!speechRecognitionInstance) {
         document.getElementById('dictationStatus').textContent = 'Web Speech API is not supported in this browser. Type or paste the scope instead.';
         return;
@@ -1358,7 +1391,9 @@
               Source: <a href="${escapeHtml(clm.source_url)}" target="_blank" rel="noopener">${escapeHtml(clm.source_name)}</a> •
               Observed Value: <span class="mono">${escapeHtml(clm.extracted_value)}</span> •
               Updated: <span class="mono">${escapeHtml(clm.source_updated_at)}</span> •
-              Freshness: <span class="tag ${clm.is_cached ? 'tag-amber' : (clm.is_stale ? 'tag-red' : 'tag-green')}">${clm.is_cached ? 'CACHED' : (clm.is_stale ? 'STALE' : 'FRESH')}</span> •
+              Retrieved: <span class="mono">${escapeHtml(clm.retrieved_at)}</span> •
+              Age: <span class="mono">${escapeHtml(String(clm.age_seconds))}s</span> •
+              Freshness: <span class="tag ${clm.freshness_status === 'CACHED' ? 'tag-amber' : (clm.freshness_status === 'STALE' ? 'tag-red' : 'tag-green')}">${escapeHtml(clm.freshness_status)}</span> •
               Rule: <span>${decision.status === 'UNCERTAIN' ? 'uncertainty rule applies' : 'fresh evidence and rule-state agreement'}</span>
             </div>
           </div>
@@ -1385,6 +1420,10 @@
       const modeBadge = document.getElementById('agentModeBadge');
       modeBadge.textContent = agent.provider_error || agent.mode;
       modeBadge.title = '';
+      document.getElementById('evidenceSourceBadge').textContent =
+        collection.source_mode === 'grafana'
+          ? 'Configured Grafana-compatible source'
+          : 'Synthetic fixtures (not live telemetry)';
       document.getElementById('modelName').textContent = `${agent.provider || ''} ${agent.model}`.trim();
       document.getElementById('cachedResultBadge').hidden = !agent.cached_result;
       document.getElementById('runMode').textContent = agent.mode;
@@ -1431,8 +1470,14 @@
         const response = await fetch('/api/config');
         if (!response.ok) throw new Error(`Configuration request failed (${response.status})`);
         const config = await response.json();
+        offlineMode = config.offline_mode === true;
         document.getElementById('agentModeBadge').textContent = config.mode;
         document.getElementById('modelName').textContent = config.model;
+        document.getElementById('evidenceSourceBadge').textContent =
+          config.evidence_source_mode === 'grafana'
+            ? (config.offline_mode ? 'Grafana unavailable (offline; not contacted)' : 'Configured Grafana-compatible source (not externally verified)')
+            : 'Synthetic fixtures (not live telemetry)';
+        document.getElementById('agentModeBadge').textContent = config.offline_mode ? 'Provider offline' : config.mode;
       } catch (error) {
         document.getElementById('agentModeBadge').textContent = 'Mode unavailable';
         document.getElementById('runStatus').textContent = `Unable to load runtime mode: ${error.message}`;
@@ -1446,6 +1491,11 @@
 
     // TTS: Read Aloud
     function playVoiceBrief() {
+      if (offlineMode) {
+        document.getElementById('runStatus').textContent =
+          'Voice playback is disabled in offline mode. The text brief is available below.';
+        return;
+      }
       if (!('speechSynthesis' in window)) {
         document.getElementById('runStatus').textContent = 'Text-to-speech is unavailable in this browser; the visible subtitles are still available.';
         return;
@@ -1524,6 +1574,7 @@
         });
 
         const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || `Approval request failed (${res.status})`);
 
         if (decision === 'REJECTED') {
           document.getElementById('approvalStateTag').className = 'tag tag-red';
@@ -1534,12 +1585,18 @@
             </div>`;
           document.getElementById('btnApprove').disabled = true;
           document.getElementById('btnReject').disabled = true;
+          document.getElementById('btnEdit').disabled = true;
           return;
         }
 
         // APPROVED
         document.getElementById('approvalStateTag').className = 'tag tag-green';
-        document.getElementById('approvalStateTag').textContent = 'Approved & Posted';
+        document.getElementById('approvalStateTag').textContent =
+          data.status === 'DUPLICATE_IGNORED' ? 'Already Posted (Retry Suppressed)' : 'Approved & Posted';
+        document.getElementById('proposedPostText').readOnly = true;
+        document.getElementById('btnEdit').disabled = true;
+        document.getElementById('btnApprove').disabled = true;
+        document.getElementById('btnReject').disabled = true;
         lastPostedId = data.post_id;
         document.getElementById('btnRetry').disabled = false;
 
@@ -1555,7 +1612,7 @@
         await runVerification(incId, message, data.post_id, currentAnalysisData.agent.run_id);
 
       } catch (err) {
-        alert('Approval execution error: ' + err.message);
+        document.getElementById('runStatus').textContent = 'Approval was not accepted: ' + err.message;
       }
     }
 
@@ -1579,6 +1636,7 @@
       });
 
       const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || `Retry failed (${res.status})`);
       const notice = document.getElementById('idempotencyNotice');
 
       if (data.is_duplicate) {
@@ -1595,10 +1653,16 @@
 
     // Load Channel Feed
     async function loadChannelFeed() {
+      const box = document.getElementById('channelFeedBox');
+      if (!operatorAccessToken) {
+        box.textContent = 'Connect with an operator token to view the mock channel feed.';
+        return;
+      }
       try {
         const res = await fetch('/api/channel');
         const posts = await res.json();
-        const box = document.getElementById('channelFeedBox');
+        if (!res.ok) throw new Error(posts.detail || `Channel request failed (${res.status})`);
+        if (!Array.isArray(posts)) throw new Error('Channel response was not a list.');
         if (!posts || posts.length === 0) {
           box.innerHTML = '<div style="text-align:center; color:var(--text-dim); margin-top:auto; margin-bottom:auto;">No channel messages yet.<br>Approve an update to publish.</div>';
           return;
@@ -1622,6 +1686,7 @@
         });
       } catch (err) {
         console.error('Error fetching channel feed:', err);
+        box.textContent = `Unable to load the protected channel feed: ${err.message}`;
       }
     }
 

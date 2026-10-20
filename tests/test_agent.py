@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -56,6 +57,7 @@ def test_llm_mode_uses_tools_and_passes_guardrails(monkeypatch, scenario_id, exp
         return json.dumps(output), trace, {"prompt_tokens": 12, "completion_tokens": 20}, "gemini", "mock-model"
 
     monkeypatch.setenv("LLM_API_KEY", "mock-key")
+    monkeypatch.setenv("OFFLINE_MODE", "false")
     monkeypatch.setenv("LLM_PROVIDER", "gemini")
     monkeypatch.setattr("app.agent.run_tool_loop", fake_tool_loop)
     monkeypatch.setattr("app.agent.repair_response", lambda *_: pytest.fail("unexpected repair"))
@@ -68,11 +70,23 @@ def test_llm_mode_uses_tools_and_passes_guardrails(monkeypatch, scenario_id, exp
     assert result.confidence_method.startswith("0.65 x")
     assert len(captured["observations"]) == 5
     assert all(
-        set(("signal_id", "source_url", "value", "unit", "source_updated_at", "retrieved_at",
-             "age_seconds", "cached", "stale")).issuperset(item)
+        set((
+            "signal_id", "source_url", "source_id", "value", "unit", "source_updated_at",
+            "retrieved_at", "age_seconds", "cached", "stale", "evidence_origin",
+            "retrieval_status",
+        )).issuperset(item)
         for group in captured["observations"]
         for item in group
     )
+    assert all(
+        claim.source_url
+        and claim.source_updated_at != "Unavailable"
+        and claim.retrieved_at == collection.retrieved_at
+        and claim.freshness_status in {"FRESH", "CACHED", "STALE"}
+        for claim in result.brief.claims
+    )
+    assert "Evidence provenance:" in result.proposed_post
+    assert all(claim.source_url in result.proposed_post for claim in result.brief.claims)
     if scenario_id == "TC2":
         assert "not proof of recovery" in result.voice_script.lower()
     if scenario_id == "TC4":
@@ -106,6 +120,7 @@ def test_cached_recovery_claim_is_rejected_and_repaired_failure_falls_back(monke
     })
     repair_calls = []
     monkeypatch.setenv("LLM_API_KEY", "mock-key")
+    monkeypatch.setenv("OFFLINE_MODE", "false")
     monkeypatch.setattr(
         "app.agent.run_tool_loop",
         lambda *args, **kwargs: (
@@ -135,6 +150,7 @@ def test_missing_timestamp_is_rejected_and_repair_is_attempted(monkeypatch):
     unsafe["voice_script"] = "Incident status is degraded."
     repairs = []
     monkeypatch.setenv("LLM_API_KEY", "mock-key")
+    monkeypatch.setenv("OFFLINE_MODE", "false")
     monkeypatch.setattr(
         "app.agent.run_tool_loop",
         lambda *args, **kwargs: (json.dumps(unsafe), [], {}, "gemini", "mock"),
@@ -160,6 +176,7 @@ def test_pii_in_llm_output_is_redacted_before_repair_and_rejected(monkeypatch):
     unsafe["voice_script"] += " Contact user@example.com."
     repair_prompts = []
     monkeypatch.setenv("LLM_API_KEY", "mock-key")
+    monkeypatch.setenv("OFFLINE_MODE", "false")
     monkeypatch.setattr(
         "app.agent.run_tool_loop",
         lambda *args, **kwargs: (json.dumps(unsafe), [], {}, "gemini", "mock"),
@@ -195,6 +212,7 @@ def test_tc3_pii_is_redacted_before_tool_output_and_prompt(monkeypatch):
         return json.dumps(output), [], {}, "gemini", "mock"
 
     monkeypatch.setenv("LLM_API_KEY", "mock-key")
+    monkeypatch.setenv("OFFLINE_MODE", "false")
     monkeypatch.setattr("app.agent.run_tool_loop", fake_tool_loop)
 
     result = run_agent(collection, decision)
@@ -209,6 +227,7 @@ def test_tc3_pii_is_redacted_before_tool_output_and_prompt(monkeypatch):
 def test_provider_timeout_falls_back(monkeypatch):
     collection, decision = _build_case("TC1", "INC-PROVIDER-TIMEOUT")
     monkeypatch.setenv("LLM_API_KEY", "mock-key")
+    monkeypatch.setenv("OFFLINE_MODE", "false")
     monkeypatch.setattr(
         "app.agent.run_tool_loop",
         lambda *args, **kwargs: (_ for _ in ()).throw(ProviderError("timed out")),
@@ -282,6 +301,7 @@ def test_gemini_full_agent_loop_calls_each_tool_then_parses_final_response(monke
         return json.dumps(output), [], {}
 
     monkeypatch.setenv("LLM_API_KEY", "test-secret")
+    monkeypatch.setenv("OFFLINE_MODE", "false")
     monkeypatch.setenv("LLM_PROVIDER", "gemini")
     monkeypatch.setenv("LLM_MODEL", "gemini-2.5-flash")
     monkeypatch.setattr("app.llm._gemini_request", fake_gemini_request)
@@ -340,6 +360,41 @@ def test_gemini_api_error_logs_full_details_without_api_key(monkeypatch, caplog)
     assert not caught.value.retryable
 
 
+def test_openai_compatible_request_uses_configured_api_key(monkeypatch):
+    from app.llm import _openai_request
+
+    captured = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return b'{"choices":[{"message":{"content":"ok"}}]}'
+
+    def fake_urlopen(request, timeout):
+        captured["authorization"] = request.get_header("Authorization")
+        captured["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setattr("app.llm.urlopen", fake_urlopen)
+    response = _openai_request(
+        [{"role": "user", "content": "synthetic"}],
+        [],
+        model="mock-model",
+        api_key="test-fallback-secret",
+        timeout=3,
+        base_url="https://provider.example/v1",
+    )
+
+    assert response[0] == "ok"
+    assert captured["authorization"] == "Bearer test-fallback-secret"
+    assert captured["timeout"] == 3
+
+
 def test_primary_quota_uses_configured_openai_compatible_fallback(monkeypatch):
     from app.llm import _request_with_failover
 
@@ -378,6 +433,7 @@ def test_primary_quota_uses_configured_openai_compatible_fallback(monkeypatch):
 def test_quota_failure_shows_short_status_without_leaking_diagnostic(monkeypatch):
     collection, decision = _build_case("TC1", "INC-QUOTA-BADGE")
     monkeypatch.setenv("LLM_API_KEY", "mock-key")
+    monkeypatch.setenv("OFFLINE_MODE", "false")
     monkeypatch.setenv("LLM_PROVIDER", "gemini")
     monkeypatch.delenv("LLM_FALLBACK_PROVIDER", raising=False)
     monkeypatch.setattr(
@@ -412,6 +468,7 @@ def test_recorded_response_replays_without_live_provider(monkeypatch, tmp_path):
     monkeypatch.setenv("LLM_RECORDINGS_PATH", str(recordings_path))
     monkeypatch.setenv("RECORD_LLM", "true")
     monkeypatch.setenv("LLM_API_KEY", "mock-key")
+    monkeypatch.setenv("OFFLINE_MODE", "false")
     monkeypatch.setattr(
         "app.agent.run_tool_loop",
         lambda *args, **kwargs: (
@@ -425,16 +482,35 @@ def test_recorded_response_replays_without_live_provider(monkeypatch, tmp_path):
     assert stored["TC1"]["provider"] == "gemini"
 
     monkeypatch.delenv("LLM_API_KEY", raising=False)
+    monkeypatch.setenv("OFFLINE_MODE", "true")
     monkeypatch.setattr(
         "app.agent.run_tool_loop",
         lambda *args, **kwargs: pytest.fail("replay must not call the provider"),
     )
-    replay = run_agent(collection, decision, demo_mode=True, scenario_id="TC1")
+    replay_collection = collect_signals(
+        IncidentInput(
+            incident_id="INC-RECORD-REPLAY-NEW",
+            scope="Testing TC1 incident evidence",
+            dashboards=["https://grafana.internal.mock/d/checkout-metrics"],
+            scenario_id="TC1",
+        ),
+        base_time=datetime.now(timezone.utc) + timedelta(seconds=5),
+        save_to_db=False,
+    )
+    replay_decision = evaluate_decision_rules(replay_collection, save_to_db=False)
+    replay = run_agent(
+        replay_collection, replay_decision, demo_mode=True, scenario_id="TC1",
+    )
 
     assert replay.mode == "Replay of a recorded LLM run"
     assert replay.guardrail_verdict == "PASS"
     assert replay.model == "fixture-model"
     assert len([step for step in replay.trace if step["tool_name"] in TOOL_NAMES]) == 5
+    assert replay_collection.incident_id in replay.voice_script
+    assert all(
+        claim.source_updated_at in replay.voice_script
+        for claim in replay.brief.claims
+    )
 
 
 def test_gemini_tool_loop_does_not_start_call_below_minimum_deadline(monkeypatch):

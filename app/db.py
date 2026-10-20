@@ -43,6 +43,9 @@ CREATE TABLE IF NOT EXISTS signals (
     age_seconds REAL NOT NULL,
     is_cached INTEGER NOT NULL,
     is_stale INTEGER NOT NULL,
+    source_id TEXT NOT NULL DEFAULT '',
+    evidence_origin TEXT NOT NULL DEFAULT 'synthetic_fixture',
+    retrieval_status TEXT NOT NULL DEFAULT 'success',
     raw_payload TEXT,
     FOREIGN KEY (incident_id) REFERENCES incidents (id)
 );
@@ -62,12 +65,14 @@ CREATE TABLE IF NOT EXISTS decisions (
 CREATE TABLE IF NOT EXISTS approvals (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     incident_id TEXT NOT NULL,
+    agent_run_id INTEGER,
     action_type TEXT NOT NULL,
     destination TEXT NOT NULL,
     proposed_message TEXT NOT NULL,
     status TEXT NOT NULL,
     approved_at TEXT,
     idempotency_key TEXT NOT NULL,
+    approved_by TEXT NOT NULL DEFAULT 'offline_test',
     FOREIGN KEY (incident_id) REFERENCES incidents (id)
 );
 
@@ -134,10 +139,29 @@ def ensure_tables_exist(conn: sqlite.Connection) -> None:
             conn.executescript(SCHEMA_SQL)
             seed_mock_data_if_empty(conn)
     else:
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='posts'")
-        if not cursor.fetchone():
-            with conn:
-                conn.executescript(SCHEMA_SQL)
+        with conn:
+            conn.executescript(SCHEMA_SQL)
+    cursor.execute("PRAGMA table_info(signals)")
+    signal_columns = {row["name"] for row in cursor.fetchall()}
+    for column, definition in (
+        ("source_id", "TEXT NOT NULL DEFAULT ''"),
+        ("evidence_origin", "TEXT NOT NULL DEFAULT 'synthetic_fixture'"),
+        ("retrieval_status", "TEXT NOT NULL DEFAULT 'success'"),
+    ):
+        if column not in signal_columns:
+            conn.execute(f"ALTER TABLE signals ADD COLUMN {column} {definition}")
+    cursor.execute("PRAGMA table_info(approvals)")
+    approval_columns = {row["name"] for row in cursor.fetchall()}
+    if "agent_run_id" not in approval_columns:
+        conn.execute("ALTER TABLE approvals ADD COLUMN agent_run_id INTEGER")
+    if "approved_by" not in approval_columns:
+        conn.execute("ALTER TABLE approvals ADD COLUMN approved_by TEXT NOT NULL DEFAULT 'legacy'")
+    conn.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS approvals_agent_run_id_unique
+        ON approvals(agent_run_id) WHERE agent_run_id IS NOT NULL
+        """
+    )
 
 
 def get_connection(db_path: Optional[Path] = None) -> sqlite3.Connection:
@@ -183,8 +207,9 @@ def seed_mock_data_if_empty(conn: sqlite3.Connection) -> None:
                     """
                     INSERT INTO signals (
                         incident_id, signal_id, source_type, name, url, value, unit,
-                        source_updated_at, retrieved_at, age_seconds, is_cached, is_stale, raw_payload
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        source_updated_at, retrieved_at, age_seconds, is_cached, is_stale,
+                        source_id, evidence_origin, retrieval_status, raw_payload
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         inc_id,
@@ -199,6 +224,9 @@ def seed_mock_data_if_empty(conn: sqlite3.Connection) -> None:
                         30.0,
                         1 if s.get("is_cached") else 0,
                         1 if s.get("is_cached") else 0,
+                        s.get("url", ""),
+                        "synthetic_fixture",
+                        "success",
                         json.dumps(c_payload),
                     ),
                 )
@@ -232,8 +260,9 @@ def save_signals(incident_id: str, signals: List[Dict[str, Any]], db_path: Optio
                 """
                 INSERT INTO signals (
                     incident_id, signal_id, source_type, name, url, value, unit,
-                    source_updated_at, retrieved_at, age_seconds, is_cached, is_stale, raw_payload
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    source_updated_at, retrieved_at, age_seconds, is_cached, is_stale,
+                    source_id, evidence_origin, retrieval_status, raw_payload
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     incident_id,
@@ -248,6 +277,9 @@ def save_signals(incident_id: str, signals: List[Dict[str, Any]], db_path: Optio
                     float(s.get("age_seconds", 0.0)),
                     1 if s.get("is_cached") else 0,
                     1 if s.get("is_stale") else 0,
+                    s.get("source_id", s.get("url", "")),
+                    s.get("evidence_origin", "synthetic_fixture"),
+                    s.get("retrieval_status", "success"),
                     json.dumps(s.get("raw_payload", {})),
                 ),
             )
@@ -276,6 +308,18 @@ def save_decision(
     conn = get_connection(db_path)
     now = datetime.now(timezone.utc).isoformat()
     with conn:
+        conn.execute(
+            """
+            UPDATE approvals
+            SET status = 'INVALIDATED'
+            WHERE incident_id = ?
+              AND status IN ('APPROVED', 'POST_FAILED')
+              AND NOT EXISTS (
+                  SELECT 1 FROM posts WHERE posts.idempotency_key = approvals.idempotency_key
+              )
+            """,
+            (incident_id,),
+        )
         cursor = conn.execute(
             """
             INSERT INTO decisions (
@@ -304,6 +348,8 @@ def save_approval(
     status: str,
     idempotency_key: str,
     action_type: str = "CHANNEL_POST",
+    agent_run_id: Optional[int] = None,
+    approved_by: str = "offline_test",
     db_path: Optional[Path] = None,
 ) -> int:
     conn = get_connection(db_path)
@@ -312,10 +358,14 @@ def save_approval(
         cursor = conn.execute(
             """
             INSERT INTO approvals (
-                incident_id, action_type, destination, proposed_message, status, approved_at, idempotency_key
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                incident_id, agent_run_id, action_type, destination, proposed_message,
+                status, approved_at, idempotency_key, approved_by
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (incident_id, action_type, destination, proposed_message, status, now, idempotency_key),
+            (
+                incident_id, agent_run_id, action_type, destination,
+                proposed_message, status, now, idempotency_key, approved_by,
+            ),
         )
         approval_id = cursor.lastrowid
     conn.close()
@@ -347,26 +397,16 @@ def save_post(
 ) -> Optional[int]:
     conn = get_connection(db_path)
     now = datetime.now(timezone.utc).isoformat()
-    post_id = None
     with conn:
-        # Check if idempotency_key already exists
-        cursor = conn.cursor()
-        cursor.execute("SELECT id FROM posts WHERE idempotency_key = ?", (idempotency_key,))
-        existing = cursor.fetchone()
-        if existing:
-            # Duplicate post prevented
-            conn.close()
-            return None
-
         cursor = conn.execute(
             """
-            INSERT INTO posts (
+            INSERT OR IGNORE INTO posts (
                 incident_id, destination, message, posted_at, idempotency_key, is_duplicate
             ) VALUES (?, ?, ?, ?, ?, ?)
             """,
             (incident_id, destination, message, now, idempotency_key, 1 if is_duplicate else 0),
         )
-        post_id = cursor.lastrowid
+        post_id = cursor.lastrowid if cursor.rowcount else None
     conn.close()
     return post_id
 
@@ -576,3 +616,16 @@ def get_approvals_by_incident(
     ).fetchall()
     conn.close()
     return [dict(row) for row in rows]
+
+
+def get_approval_by_agent_run(
+    agent_run_id: int,
+    db_path: Optional[Path] = None,
+) -> Optional[Dict[str, Any]]:
+    conn = get_connection(db_path)
+    row = conn.execute(
+        "SELECT * FROM approvals WHERE agent_run_id = ?",
+        (agent_run_id,),
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None

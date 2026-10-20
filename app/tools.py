@@ -1,7 +1,6 @@
 """Synthetic evidence tools exposed to the incident agent."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List
 
 from app.collector import SignalCollectionResult
@@ -31,7 +30,7 @@ def build_toolset(
             "type": "function",
             "function": {
                 "name": name,
-                "description": f"Retrieve synthetic {name.removeprefix('get_').replace('_', ' ')} evidence for this incident.",
+                "description": f"Retrieve the collected {name.removeprefix('get_').replace('_', ' ')} evidence for this incident.",
                 "parameters": {
                     "type": "object",
                     "properties": {"incident_id": {"type": "string"}},
@@ -48,18 +47,20 @@ def build_toolset(
         if arguments.get("incident_id") != collection.incident_id:
             raise ValueError("Tool incident_id does not match the active incident.")
         selected = [s for s in collection.signals if s.source_type in groups[name]]
-        retrieved_at = datetime.now(timezone.utc).isoformat()
         return [
             {
                 "signal_id": signal.signal_id,
                 "source_url": signal.url,
+                "source_id": signal.source_id,
                 "value": signal.value,
                 "unit": signal.unit,
                 "source_updated_at": signal.source_updated_at,
-                "retrieved_at": retrieved_at,
+                "retrieved_at": signal.retrieved_at,
                 "age_seconds": signal.age_seconds,
                 "cached": signal.is_cached,
                 "stale": signal.is_stale,
+                "evidence_origin": signal.evidence_origin,
+                "retrieval_status": signal.retrieval_status,
             }
             for signal in selected
         ]

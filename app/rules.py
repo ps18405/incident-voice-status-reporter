@@ -43,6 +43,9 @@ def evaluate_decision_rules(
             "name": s.name,
             "source_type": s.source_type,
             "url": s.url,
+            "source_id": s.source_id,
+            "evidence_origin": s.evidence_origin,
+            "retrieval_status": s.retrieval_status,
             "value": s.value,
             "unit": s.unit,
             "age_seconds": s.age_seconds,
@@ -56,6 +59,10 @@ def evaluate_decision_rules(
     health_signals = [s for s in collection.signals if s.source_type == "health_check"]
 
     log_signals = [s for s in collection.signals if s.source_type == "log"]
+    failed_retrieval_signals = [
+        signal for signal in collection.signals
+        if signal.retrieval_status != "success"
+    ]
     failing_health_checks = []
     for health_signal in health_signals:
         value = health_signal.value.lower()
@@ -89,6 +96,33 @@ def evaluate_decision_rules(
         )
         if save_to_db:
             save_decision(collection.incident_id, res.status, res.reason, res.uncertainty_flag, res.cached_warning, evidence_summary)
+        return res
+
+    if failed_retrieval_signals:
+        failures = ", ".join(
+            f"{signal.name} [{signal.signal_id}] retrieval {signal.retrieval_status}"
+            for signal in failed_retrieval_signals
+        )
+        reason = f"Evidence source retrieval did not complete successfully ({failures}). State is uncertain."
+        key_findings.append(f"Evidence retrieval failures: {failures}.")
+        res = DecisionResult(
+            status="UNCERTAIN",
+            reason=reason,
+            uncertainty_flag=True,
+            cached_warning=any(signal.is_cached for signal in collection.signals),
+            recovery_uncertain_warning=bool(failing_health_checks),
+            evidence_summary=evidence_summary,
+            key_findings=key_findings,
+        )
+        if save_to_db:
+            save_decision(
+                collection.incident_id,
+                res.status,
+                res.reason,
+                res.uncertainty_flag,
+                res.cached_warning,
+                evidence_summary,
+            )
         return res
 
     # Rule 2: Check for cached dashboards (this is not proof of recovery)
@@ -145,9 +179,29 @@ def evaluate_decision_rules(
     # Rule 4: Health check not passing -> state UNCERTAIN ("recovery uncertain") (TC4)
     if failing_health_checks:
         failing_names = ", ".join(f"{s.name} [{s.signal_id}] => {s.value}" for s in failing_health_checks)
+        metric_observations = ", ".join(
+            f"{signal.name}={signal.value}{signal.unit} [{signal.signal_id}]"
+            for signal in metric_signals
+        )
+        status_observations = ", ".join(
+            f"{signal.value} [{signal.signal_id}]"
+            for signal in signals_by_type.get("status_page", [])
+        )
+        contradictory_evidence = "; other observations: " + "; ".join(
+            item for item in (
+                f"metrics {metric_observations}" if metric_observations else "",
+                f"status pages {status_observations}" if status_observations else "",
+            ) if item
+        )
         # Even if metrics appear low/green (e.g. error rate <= 1%), failing health probe overrides
-        reason = f"Health check probe is not passing ({failing_names}). Recovery uncertain."
-        key_findings.append(f"Failing health probes detected: {failing_names}. Recovery uncertain.")
+        reason = (
+            f"Health check probe is not passing ({failing_names}). "
+            f"Recovery uncertain.{contradictory_evidence}"
+        )
+        key_findings.append(
+            f"Failing health probes detected: {failing_names}. Recovery uncertain."
+            f"{contradictory_evidence}"
+        )
         
         # If error rate is high, also note degraded behavior
         status = "UNCERTAIN"
