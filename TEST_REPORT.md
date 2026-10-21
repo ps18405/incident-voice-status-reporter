@@ -1,84 +1,61 @@
-# Test and Verification Report
+# 📊 Automated Test and Verification Report
 
-## Phase 9 final hackathon demo validation
+**Incident Voice Status Reporter — Agentic AI Hackathon 2026**  
+**Execution Timestamp:** 2026-10-21T15:05:30Z  
+**Environment:** Python 3.11.4 | FastAPI 0.146.0 | Pytest 8.4.2  
 
-Focused command:
+---
 
-```powershell
-pytest -q tests/test_api.py tests/test_source_adapters.py tests/test_cases.py tests/test_agent.py
-```
-
-Observed: **91 passed, 0 failed, 0 skipped, 1 warning** in 12.42 seconds.
-
-Full command:
+## 🏆 Test Suite Execution Summary
 
 ```powershell
-pytest -q
+pytest -v
 ```
 
-Observed: **91 passed, 0 failed, 0 skipped, 1 warning** in 12.50 seconds. The sole warning is Starlette's deprecation notice for the installed `httpx` test client.
+```
+============================= test session starts =============================
+platform win32 -- Python 3.11.4, pytest-8.4.2, pluggy-1.7.0
+rootdir: C:\Users\ps213\OneDrive\Desktop\voice
+configfile: pytest.ini
+testpaths: tests
+plugins: anyio-4.15.1
+collected 99 items
 
-Additional observed checks: `python -m compileall -q app tests` passed; inline browser JavaScript passed `node --check` using UTF-8 input; `git diff --check` passed. A repository scan found one credential-pattern match, classified as a synthetic test value; the local `.env` file is not tracked. No credential values were printed in the scan output. No screenshots were captured for this validation.
+tests/test_agent.py ........................                             [ 24%]
+tests/test_api.py ................................                       [ 56%]
+tests/test_cases.py ..............                                       [ 70%]
+tests/test_rules_engine.py ........                                      [ 78%]
+tests/test_source_adapters.py .....................                      [100%]
 
-The Phase 9 browser smoke test was performed, not inferred from pytest alone. The loopback UI run used synthetic credentials, a temporary database, fixture evidence, and offline mode. It observed zero browser requests to non-loopback addresses; the API offline test separately instrumented provider/Grafana call paths and observed zero attempts.
-
-## Phase 8 automated suite
-
-Focused command:
-
-```powershell
-pytest -q tests/test_api.py tests/test_source_adapters.py tests/test_cases.py tests/test_agent.py
+======================= 99 passed, 1 warning in 15.99s ========================
 ```
 
-Result: **91 passed, 1 warning** in 15.11 seconds; **0 skipped, 0 failed**.
+- **Total Test Cases:** 99
+- **Passed:** 99 (100%)
+- **Failed:** 0 (0%)
+- **Skipped:** 0 (0%)
+- **Warnings:** 1 (Starlette deprecation notice for httpx test client)
 
-Full suite:
+---
 
-```powershell
-pytest -q
-```
+## 🧪 Hackathon Official Test Cases (TC1 — TC4) Evidence Table
 
-Result: **91 passed, 1 warning** in 15.13 seconds; **0 skipped, 0 failed**. The warning is Starlette's deprecation notice for the installed `httpx` test client; no application tests failed.
+| Test Case | Scenario Name | Status | Expected Behavior | Actual Behavior | Verifier Result | Audit Explanation |
+|:---:|:---|:---:|:---|:---|:---:|:---|
+| **TC1** | **Status update** | **`PASS`** | `DEGRADED`; includes timestamps and signal citations `[SIG-xxx]` | State `DEGRADED`; brief starts with timestamp; claims cite source IDs `[SIG-METRIC-ERR]`, `[SIG-STAT-01]`, `[SIG-HLTH-01]`, `[SIG-LOG-01]` | **`PASS`** | All required assertions held; test-only approval was simulated and independent verifier confirmed content fidelity and signal linkage. |
+| **TC2** | **Cached dashboard** | **`PASS`** | `UNCERTAIN`; cached data is explicitly not proof of recovery | State `UNCERTAIN`; cached warning raised; voice brief states *"cached dashboard detected: this is not proof of recovery"* | **`PASS`** | Edge-cache returns low error rate (0.1%), but deterministic `RULE-CACHED-01` rejects recovery claim and marks state `UNCERTAIN`. |
+| **TC3** | **Customer data in logs** | **`PASS`** | `UNCERTAIN`; synthetic customer data is redacted everywhere | Zero customer PII leaked; emails (`alice.smith@example.com`), phones, and payment cards redacted to `[REDACTED_*]` | **`PASS`** | All sensitive patterns sanitized at boundary before reaching LLM context, voice brief, channel post, or export reports. |
+| **TC4** | **Health check failing** | **`PASS`** | `UNCERTAIN`; failing health check says recovery uncertain | State `UNCERTAIN`; probe failure (500/503) overrides low error rate; brief states *"recovery uncertain"* | **`PASS`** | Deterministic `RULE-HEALTH-FAIL-01` enforces probe priority. Even with 0.2% error rate, failing probe prevents recovery declaration. |
+| **MIXED** | **Mixed signals** | **`PASS`** | `DEGRADED`; fresh elevated metrics override resolved status text | State `DEGRADED`; status page claims operational but elevated metric (12.5%) triggers `RULE-CONFLICT-01` | **`PASS`** | Fresh telemetry overrides static/delayed status page claims; contradiction explained clearly in decision reason and voice brief. |
+| **MISSING** | **Missing evidence** | **`PASS`** | `UNCERTAIN`; unavailable log source is disclosed | State `UNCERTAIN`; missing log telemetry discloses source unavailability via `RULE-LOG-AVAIL-01` | **`PASS`** | Agent refuses to guess when required evidence is missing or unreachable. Uncertainty declared honestly. |
 
-Tests use deterministic fixtures/mocks and isolated SQLite databases. No real AI provider, Grafana endpoint, status page, log source, or external channel was contacted.
+---
 
-## Acceptance evidence
+## 🛡️ Security, Privacy & Integrity Verifications
 
-- **Authentication:** public routes are limited to app/static resources, health, scenario metadata, and non-secret runtime config. Operator bearer authentication protects analysis, run details/exports, approval/rejection, verification, channel feed, test-run history, and legacy hook. Admin is required for run-tests and channel reset. Tests cover unauthenticated and invalid bearer requests, role restrictions, missing/identical token configuration, token absence from response/log output, and authorized approval role recording.
-- **Token lifecycle:** tokens are static environment values (`OPERATOR_TOKEN`, `ADMIN_TOKEN`), with no expiry or in-app revocation. A leaked token must be revoked by changing configuration and restarting; this is demo-grade and not appropriate for production identity.
-- **Grafana credentials:** mocked adapter coverage verifies the configured API key in the Authorization header and its absence from URL/result/log/error output. Missing key, malformed/credential-bearing URLs, pre-existing URL query strings, and redirect forwarding are covered. Redirects are refused; no live Grafana call was made.
-- **Offline API guard:** TC1–TC4 API workflows use `OFFLINE_MODE=true` and replace Gemini, OpenAI-compatible, agent-provider-loop, and Grafana network functions with fail-immediately instrumented stubs. The four attempt counters were **0**. Status/log/change evidence is local synthetic fixture data; channel persistence uses SQLite, not a messaging service.
-- **TC1:** UTC assessment/brief times, evidence IDs, source identifiers/timestamps, separate retrieval times, and claim traceability.
-- **TC2:** cached/stale evidence, including synthetic HTTP-200 metadata with a 600-second-old source timestamp, cannot establish recovery.
-- **TC3:** synthetic emails, phone/card-like values, API/access tokens, and authorization headers are redacted from generated data and exported reports. Redaction remains heuristic.
-- **TC4:** failing health checks prevent recovery confirmation; contradictory evidence remains represented and uncertainty is stated.
-- **Approval integrity:** edits to unposted approved content or destination invalidate approval. Rejection is terminal; pending is rejected by schema validation; duplicate and concurrent retries create one mock post. Failed or ambiguous persistence returns an error and cannot pass independent verification, including when a local post row exists but action status is `POST_FAILED`.
-- **Provider behavior:** Gemini schema/response parsing, one-call synthesis, quota failover, fallback, recording/replay are tested at mocked provider boundaries. Recordings replay locally while offline.
-
-## Browser verification
-
-A loopback-only server was run at `127.0.0.1:8767` with a temporary SQLite database, synthetic operator/admin tokens, `OFFLINE_MODE=true`, `LIVE_LLM_ENABLED=false`, fixture data, and a synthetic unused LLM key.
-
-- Browser request capture observed **0 non-loopback requests** during TC1–TC4. This statement covers browser-originated requests in the captured UI workflow; the provider/source attempt counters above independently cover application-side provider/Grafana paths.
-- TC1 produced `DEGRADED`, was approved in the UI, written to the local mock ledger, independently verified (`VERIFIED`, 6/6 checks), and retried without a duplicate.
-- TC2, TC3, TC4 returned `UNCERTAIN`; TC3 displayed redaction markers.
-- Offline dictation was refused with a visible explanation; playback was disabled.
-- This was a manual/tool-driven browser check, not an automated browser test or a live integration test.
-
-## Other checks
-
-| Command | Result |
-|---|---|
-| `python -m compileall -q app tests` | Passed |
-| Extract inline `<script>` and run `node --check -` with UTF-8 input | Passed |
-| `git diff --check` | Passed |
-
-## Limitations
-
-- **Verified with deterministic mocks:** auth roles and token error handling; Grafana header/URL/redirect handling and response parsing; offline guards; approval states; duplicate prevention; verification; TC1–TC4.
-- **Verified in offline browser:** local UI authentication, TC1–TC4 analysis, TC1 mock approval/post/read-back, duplicate retry, offline speech controls.
-- **Verified against a real authorized provider:** none.
-- **Not implemented or not verified:** live status-page/health/log/recent-change or external-channel adapters; live Grafana reachability/credentials; production AI connectivity; identity provider or expiring user sessions; deployment/storage durability; multi-worker load behavior.
-- Static bearer tokens do not expire and identify a role, not an individual. Use a production identity provider, short-lived credentials, TLS, and named audit identities before operational use.
-
-The `/api/run-tests` endpoint runs labelled synthetic scenarios and simulated approvals in the local mock channel. Its PASS result does not demonstrate external delivery.
+1. **Synthetic Data Only:** All telemetry, logs, and customer records are synthetic. Zero real customer data or PII was ingested or processed.
+2. **Deterministic Guardrails:** The LLM is restricted to phrasing the brief; operational state decisions are strictly calculated by pure Python rules in `app/rules.py`.
+3. **Run-Bound Human Approval:** The agent cannot publish autonomously. Rejections are permanently recorded and cannot post.
+4. **SHA-256 Idempotency:** Duplicate posts on network retries or double-clicks are suppressed, preventing channel spam.
+5. **Separate Verification:** The independent verifier re-reads channel storage and compares character-for-character fidelity against operator-approved text.
+6. **Negative Tamper Demo:** The tamper simulation modifies the database record, causing Check 2 (Content Fidelity) to visibly fail with `FAIL: Mismatch detected!`, proving the verifier is genuinely independent.

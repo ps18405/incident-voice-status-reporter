@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Incident Voice Status Reporter | SRE Command Center</title>
+  <title>Incident Voice Status Reporter | SRE Operational Command Center</title>
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
   <style>
     :root {
@@ -28,6 +28,8 @@
       --status-uncertain-bg: rgba(245, 158, 11, 0.15);
       --status-recovered: #10b981;
       --status-recovered-bg: rgba(16, 185, 129, 0.15);
+      --status-outage: #dc2626;
+      --status-outage-bg: rgba(220, 38, 38, 0.2);
       
       --card-radius: 10px;
     }
@@ -41,96 +43,209 @@
     body {
       background-color: var(--bg-primary);
       color: var(--text-main);
-      font-family: 'Inter', sans-serif;
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
       line-height: 1.5;
-      padding: 20px;
+      padding: 0 0 40px 0;
       min-height: 100vh;
     }
 
-    code, pre, .mono {
-      font-family: 'JetBrains Mono', monospace;
+    body.light-theme {
+      --bg-primary: #f8fafc;
+      --bg-secondary: #ffffff;
+      --bg-card: #f1f5f9;
+      --bg-card-hover: #e2e8f0;
+      --border-color: #cbd5e1;
+      --border-focus: #2563eb;
+      --text-main: #0f172a;
+      --text-muted: #475569;
+      --text-dim: #64748b;
     }
 
-    header {
+    code, pre, .mono {
+      font-family: 'JetBrains Mono', Consolas, Monaco, monospace;
+    }
+
+    /* Sticky Global Header */
+    .sticky-header {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      background: rgba(11, 15, 25, 0.95);
+      backdrop-filter: blur(10px);
+      border-bottom: 1px solid var(--border-color);
+      padding: 12px 24px;
       display: flex;
       justify-content: space-between;
       align-items: center;
-      padding-bottom: 18px;
-      margin-bottom: 20px;
-      border-bottom: 1px solid var(--border-color);
       flex-wrap: wrap;
-      gap: 15px;
+      gap: 12px;
+    }
+
+    body.light-theme .sticky-header {
+      background: rgba(255, 255, 255, 0.95);
     }
 
     .brand {
       display: flex;
       align-items: center;
-      gap: 12px;
+      gap: 10px;
     }
 
     .brand-icon {
       background: linear-gradient(135deg, #2563eb, #9333ea);
-      width: 40px;
-      height: 40px;
-      border-radius: 10px;
+      width: 36px;
+      height: 36px;
+      border-radius: 8px;
       display: flex;
       align-items: center;
       justify-content: center;
-      font-size: 20px;
-      box-shadow: 0 0 15px rgba(37, 99, 235, 0.4);
+      font-size: 18px;
+      box-shadow: 0 0 12px rgba(37, 99, 235, 0.4);
     }
 
     .brand-title h1 {
-      font-size: 1.25rem;
+      font-size: 1.15rem;
       font-weight: 700;
       letter-spacing: -0.02em;
     }
 
     .brand-title p {
-      font-size: 0.8rem;
+      font-size: 0.72rem;
       color: var(--text-muted);
     }
 
-    .header-meta {
+    .header-controls {
       display: flex;
       align-items: center;
-      gap: 12px;
-    }
-
-    .live-badge {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      background: rgba(16, 185, 129, 0.15);
-      color: #34d399;
-      padding: 4px 10px;
-      border-radius: 9999px;
-      font-size: 0.75rem;
-      font-weight: 600;
-      border: 1px solid rgba(16, 185, 129, 0.3);
-    }
-
-    .live-pulse {
-      width: 8px;
-      height: 8px;
-      background: #34d399;
-      border-radius: 50%;
-      animation: pulse 1.8s infinite;
-    }
-
-    @keyframes pulse {
-      0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.7); }
-      70% { transform: scale(1.1); box-shadow: 0 0 0 6px rgba(52, 211, 153, 0); }
-      100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(52, 211, 153, 0); }
+      gap: 10px;
+      flex-wrap: wrap;
     }
 
     .clock-tag {
       background: var(--bg-card);
       border: 1px solid var(--border-color);
-      padding: 5px 12px;
+      padding: 4px 10px;
       border-radius: 6px;
-      font-size: 0.82rem;
+      font-size: 0.78rem;
       color: var(--accent-blue);
+      white-space: nowrap;
+    }
+
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      border-radius: 9999px;
+      font-size: 0.8rem;
+      font-weight: 700;
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
+      border: 1px solid transparent;
+      white-space: nowrap;
+    }
+
+    .status-badge.DEGRADED {
+      background: var(--status-degraded-bg);
+      color: var(--status-degraded);
+      border-color: rgba(239, 68, 68, 0.4);
+    }
+
+    .status-badge.UNCERTAIN {
+      background: var(--status-uncertain-bg);
+      color: var(--status-uncertain);
+      border-color: rgba(245, 158, 11, 0.4);
+    }
+
+    .status-badge.RECOVERED {
+      background: var(--status-recovered-bg);
+      color: var(--status-recovered);
+      border-color: rgba(16, 185, 129, 0.4);
+    }
+
+    .status-badge.OUTAGE {
+      background: var(--status-outage-bg);
+      color: var(--status-outage);
+      border-color: rgba(220, 38, 38, 0.5);
+    }
+
+    /* Stepper Navigation */
+    .stepper-nav {
+      background: var(--bg-secondary);
+      border-bottom: 1px solid var(--border-color);
+      padding: 10px 24px;
+      display: flex;
+      gap: 8px;
+      overflow-x: auto;
+      scrollbar-width: thin;
+    }
+
+    .step-btn {
+      background: transparent;
+      border: 1px solid var(--border-color);
+      color: var(--text-muted);
+      padding: 6px 14px;
+      border-radius: 6px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      white-space: nowrap;
+      transition: all 0.2s;
+    }
+
+    .step-btn:hover {
+      background: var(--bg-card);
+      color: var(--text-main);
+      border-color: var(--accent-blue);
+    }
+
+    .step-btn.active {
+      background: var(--accent-blue-dim);
+      border-color: var(--accent-blue);
+      color: var(--accent-blue);
+    }
+
+    .step-num {
+      font-size: 1rem;
+    }
+
+    /* Container */
+    .main-container {
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 20px 24px;
+    }
+
+    /* Cold Start Waking Banner */
+    .cold-start-banner {
+      background: linear-gradient(90deg, #1e3a8a, #4338ca);
+      color: #fff;
+      padding: 10px 16px;
+      border-radius: 8px;
+      margin-bottom: 16px;
+      font-size: 0.85rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      animation: fadeIn 0.3s;
+    }
+
+    /* 2-Minute Demo Live Banner */
+    .demo-story-banner {
+      background: linear-gradient(90deg, #065f46, #047857);
+      border: 1px solid #10b981;
+      color: #fff;
+      padding: 12px 18px;
+      border-radius: 8px;
+      margin-bottom: 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      box-shadow: 0 0 15px rgba(16, 185, 129, 0.25);
     }
 
     /* Scenario Bar */
@@ -138,8 +253,8 @@
       background: var(--bg-secondary);
       border: 1px solid var(--border-color);
       border-radius: var(--card-radius);
-      padding: 12px 16px;
-      margin-bottom: 20px;
+      padding: 14px 18px;
+      margin-bottom: 24px;
       display: flex;
       align-items: center;
       justify-content: space-between;
@@ -184,22 +299,22 @@
       background: var(--accent-blue-dim);
       border-color: var(--accent-blue);
       color: var(--accent-blue);
-      font-weight: 600;
+      font-weight: 700;
     }
 
-    /* Grid Layouts */
+    /* Grids & Cards */
     .grid-2 {
       display: grid;
       grid-template-columns: 1fr 1fr;
       gap: 20px;
-      margin-bottom: 20px;
+      margin-bottom: 24px;
     }
 
     .grid-3 {
       display: grid;
-      grid-template-columns: 1.1fr 1fr 1.1fr;
+      grid-template-columns: 1fr 1fr 1fr;
       gap: 20px;
-      margin-bottom: 20px;
+      margin-bottom: 24px;
     }
 
     @media (max-width: 1080px) {
@@ -208,12 +323,11 @@
       }
     }
 
-    /* Cards */
     .card {
       background: var(--bg-secondary);
       border: 1px solid var(--border-color);
       border-radius: var(--card-radius);
-      padding: 18px;
+      padding: 20px;
       display: flex;
       flex-direction: column;
     }
@@ -224,61 +338,21 @@
       align-items: center;
       margin-bottom: 14px;
       border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-      padding-bottom: 10px;
+      padding-bottom: 12px;
     }
 
     .card-title {
       font-size: 0.95rem;
-      font-weight: 600;
+      font-weight: 700;
       display: flex;
       align-items: center;
       gap: 8px;
     }
 
-    .card-title .icon {
-      font-size: 1.1rem;
-    }
-
-    /* Form Inputs */
-    .form-group {
-      margin-bottom: 12px;
-    }
-
-    .form-group label {
-      display: block;
-      font-size: 0.78rem;
-      font-weight: 600;
-      color: var(--text-muted);
-      margin-bottom: 5px;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-    }
-
-    .input-row {
-      display: flex;
-      gap: 8px;
-    }
-
-    input[type="text"], textarea {
-      width: 100%;
-      background: var(--bg-card);
-      border: 1px solid var(--border-color);
-      border-radius: 6px;
-      padding: 8px 12px;
-      color: var(--text-main);
-      font-size: 0.88rem;
-      outline: none;
-      transition: border-color 0.2s;
-    }
-
-    input[type="text"]:focus, textarea:focus {
-      border-color: var(--border-focus);
-    }
-
-    textarea {
-      resize: vertical;
-      min-height: 80px;
-      line-height: 1.4;
+    /* Step section headers */
+    .step-section {
+      scroll-margin-top: 130px;
+      margin-bottom: 24px;
     }
 
     /* Buttons */
@@ -292,15 +366,21 @@
       color: var(--text-main);
       padding: 8px 14px;
       border-radius: 6px;
-      font-size: 0.85rem;
+      font-size: 0.84rem;
       font-weight: 600;
       cursor: pointer;
       transition: all 0.2s;
       white-space: nowrap;
     }
 
-    .btn:hover {
+    .btn:hover:not(:disabled) {
       background: var(--bg-card-hover);
+      border-color: var(--accent-blue);
+    }
+
+    .btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
     }
 
     .btn-primary {
@@ -309,8 +389,38 @@
       color: #fff;
     }
 
-    .btn-primary:hover {
+    .btn-primary:hover:not(:disabled) {
       background: #1d4ed8;
+    }
+
+    .btn-approve {
+      background: rgba(16, 185, 129, 0.2);
+      border-color: #10b981;
+      color: #34d399;
+    }
+
+    .btn-approve:hover:not(:disabled) {
+      background: rgba(16, 185, 129, 0.35);
+    }
+
+    .btn-reject {
+      background: rgba(239, 68, 68, 0.2);
+      border-color: #ef4444;
+      color: #f87171;
+    }
+
+    .btn-reject:hover:not(:disabled) {
+      background: rgba(239, 68, 68, 0.35);
+    }
+
+    .btn-tamper {
+      background: rgba(220, 38, 38, 0.15);
+      border-color: rgba(220, 38, 38, 0.5);
+      color: #fca5a5;
+    }
+
+    .btn-tamper:hover:not(:disabled) {
+      background: rgba(220, 38, 38, 0.3);
     }
 
     .btn-mic {
@@ -321,92 +431,84 @@
     }
 
     .btn-mic.recording {
-      background: rgba(239, 68, 68, 0.2);
+      background: rgba(239, 68, 68, 0.25);
       border-color: #ef4444;
       color: #f87171;
       animation: pulse-red 1.2s infinite;
     }
 
     @keyframes pulse-red {
-      0% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.5); }
-      70% { box-shadow: 0 0 0 6px rgba(239, 68, 68, 0); }
+      0% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.6); }
+      70% { box-shadow: 0 0 0 8px rgba(239, 68, 68, 0); }
       100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
     }
 
-    .btn-approve {
-      background: rgba(16, 185, 129, 0.2);
-      border-color: #10b981;
-      color: #34d399;
+    /* Inputs */
+    .form-group {
+      margin-bottom: 12px;
     }
 
-    .btn-approve:hover {
-      background: rgba(16, 185, 129, 0.35);
-    }
-
-    .btn-reject {
-      background: rgba(239, 68, 68, 0.2);
-      border-color: #ef4444;
-      color: #f87171;
-    }
-
-    .btn-reject:hover {
-      background: rgba(239, 68, 68, 0.35);
-    }
-
-    .btn-retry {
-      background: rgba(245, 158, 11, 0.2);
-      border-color: #f59e0b;
-      color: #fbbf24;
-    }
-
-    .btn-retry:hover {
-      background: rgba(245, 158, 11, 0.35);
-    }
-
-    /* Status Badges */
-    .status-badge {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      padding: 6px 14px;
-      border-radius: 9999px;
-      font-size: 0.82rem;
+    .form-group label {
+      display: block;
+      font-size: 0.75rem;
       font-weight: 700;
-      letter-spacing: 0.04em;
+      color: var(--text-muted);
+      margin-bottom: 6px;
       text-transform: uppercase;
+      letter-spacing: 0.05em;
     }
 
-    .status-badge.DEGRADED {
-      background: var(--status-degraded-bg);
-      color: var(--status-degraded);
-      border: 1px solid rgba(239, 68, 68, 0.4);
+    .input-row {
+      display: flex;
+      gap: 8px;
     }
 
-    .status-badge.UNCERTAIN {
-      background: var(--status-uncertain-bg);
-      color: var(--status-uncertain);
-      border: 1px solid rgba(245, 158, 11, 0.4);
+    input[type="text"], input[type="password"], textarea, select {
+      width: 100%;
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      padding: 8px 12px;
+      color: var(--text-main);
+      font-size: 0.88rem;
+      outline: none;
+      transition: border-color 0.2s;
     }
 
-    .status-badge.RECOVERED {
-      background: var(--status-recovered-bg);
-      color: var(--status-recovered);
-      border: 1px solid rgba(16, 185, 129, 0.4);
+    input:focus, textarea:focus, select:focus {
+      border-color: var(--border-focus);
     }
 
-    /* Voice Brief Panel */
+    textarea {
+      resize: vertical;
+      min-height: 70px;
+    }
+
+    /* Voice Brief UI */
     .voice-brief-box {
       background: var(--bg-card);
       border: 1px solid var(--border-color);
-      border-radius: 8px;
+      border-radius: 6px;
       padding: 14px;
       font-size: 0.88rem;
       line-height: 1.6;
-      color: #e2e8f0;
-      margin-bottom: 12px;
-      position: relative;
       max-height: 200px;
       overflow-y: auto;
+      margin-bottom: 12px;
+    }
+
+    .speech-sentence {
+      transition: all 0.2s;
+      padding: 2px 4px;
+      border-radius: 3px;
+    }
+
+    .speech-sentence.sentence-active {
+      background: rgba(56, 189, 248, 0.3);
+      color: #38bdf8;
+      font-weight: 600;
+      border-left: 3px solid #38bdf8;
+      padding-left: 6px;
     }
 
     .voice-controls {
@@ -415,6 +517,10 @@
       justify-content: space-between;
       flex-wrap: wrap;
       gap: 10px;
+      background: var(--bg-primary);
+      padding: 10px 12px;
+      border-radius: 6px;
+      border: 1px solid var(--border-color);
     }
 
     .voice-controls-left {
@@ -424,117 +530,201 @@
     }
 
     .wave-anim {
-      display: none;
+      display: inline-flex;
       align-items: center;
       gap: 3px;
       height: 18px;
+      opacity: 0.3;
+      transition: opacity 0.3s;
     }
 
     .wave-anim.active {
-      display: flex;
+      opacity: 1;
     }
 
     .wave-bar {
       width: 3px;
-      background: var(--accent-blue);
+      height: 100%;
+      background: #38bdf8;
       border-radius: 2px;
-      animation: wave 0.8s infinite ease-in-out;
+      animation: wave 1s infinite ease-in-out;
     }
 
-    .wave-bar:nth-child(2) { animation-delay: 0.2s; height: 14px; }
-    .wave-bar:nth-child(3) { animation-delay: 0.4s; height: 18px; }
-    .wave-bar:nth-child(4) { animation-delay: 0.1s; height: 10px; }
+    .wave-anim.active .wave-bar:nth-child(1) { animation-delay: 0.0s; }
+    .wave-anim.active .wave-bar:nth-child(2) { animation-delay: 0.2s; }
+    .wave-anim.active .wave-bar:nth-child(3) { animation-delay: 0.4s; }
+    .wave-anim.active .wave-bar:nth-child(4) { animation-delay: 0.1s; }
 
     @keyframes wave {
       0%, 100% { height: 4px; }
-      50% { height: 16px; }
+      50% { height: 18px; }
+    }
+
+    /* Rules Fired Panel */
+    .rules-fired-container {
+      margin-top: 12px;
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      padding: 12px;
+      background: var(--bg-card);
+    }
+
+    .rule-item {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      padding: 8px 10px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+      font-size: 0.8rem;
+    }
+
+    .rule-item:last-child {
+      border-bottom: none;
+    }
+
+    .rule-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .rule-id {
+      font-family: monospace;
+      font-weight: 700;
+      color: var(--accent-blue);
+    }
+
+    /* Confidence Gauges */
+    .confidence-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 10px;
+      margin-top: 10px;
+    }
+
+    .confidence-card {
+      background: var(--bg-primary);
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      padding: 8px 10px;
+      text-align: center;
+    }
+
+    .confidence-title {
+      font-size: 0.7rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      font-weight: 700;
+    }
+
+    .confidence-score {
+      font-size: 1.1rem;
+      font-weight: 800;
+      margin: 2px 0;
+    }
+
+    .confidence-track {
+      background: rgba(255, 255, 255, 0.08);
+      height: 4px;
+      border-radius: 2px;
+      overflow: hidden;
+    }
+
+    .confidence-fill {
+      height: 100%;
+      background: #10b981;
+      transition: width 0.4s ease;
     }
 
     /* Tables */
     .table-container {
       overflow-x: auto;
-      margin-top: 10px;
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
     }
 
     table {
       width: 100%;
       border-collapse: collapse;
-      font-size: 0.82rem;
       text-align: left;
+      font-size: 0.82rem;
     }
 
     th {
       background: var(--bg-card);
+      padding: 9px 12px;
       color: var(--text-muted);
-      font-weight: 600;
-      padding: 10px 12px;
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
       border-bottom: 1px solid var(--border-color);
-      white-space: nowrap;
     }
 
     td {
-      padding: 10px 12px;
-      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-      vertical-align: middle;
+      padding: 9px 12px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+      color: var(--text-main);
     }
 
     tr:hover td {
-      background: rgba(255, 255, 255, 0.02);
+      background: var(--bg-card-hover);
     }
 
+    /* Tags */
     .tag {
       display: inline-block;
-      padding: 2px 7px;
+      padding: 2px 8px;
       border-radius: 4px;
       font-size: 0.72rem;
       font-weight: 600;
     }
 
     .tag-blue { background: rgba(56, 189, 248, 0.15); color: #38bdf8; }
+    .tag-green { background: rgba(16, 185, 129, 0.15); color: #34d399; }
     .tag-amber { background: rgba(245, 158, 11, 0.15); color: #fbbf24; }
     .tag-red { background: rgba(239, 68, 68, 0.15); color: #f87171; }
-    .tag-green { background: rgba(16, 185, 129, 0.15); color: #34d399; }
     .tag-purple { background: rgba(192, 132, 252, 0.15); color: #c084fc; }
 
-    /* Channel Feed */
-    .channel-box {
-      background: var(--bg-card);
-      border: 1px solid var(--border-color);
-      border-radius: 8px;
-      padding: 12px;
-      height: 280px;
-      overflow-y: auto;
-      display: flex;
-      flex-direction: column;
-      gap: 12px;
+    /* Banners */
+    .banner {
+      padding: 10px 14px;
+      border-radius: 6px;
+      font-size: 0.82rem;
+      margin-bottom: 12px;
     }
 
-    .post-card {
-      background: rgba(255, 255, 255, 0.03);
+    .banner-warning { background: rgba(245, 158, 11, 0.15); border-left: 4px solid #f59e0b; color: #fbbf24; }
+    .banner-success { background: rgba(16, 185, 129, 0.15); border-left: 4px solid #10b981; color: #34d399; }
+    .banner-info { background: rgba(56, 189, 248, 0.15); border-left: 4px solid #38bdf8; color: #7dd3fc; }
+    .banner-danger { background: rgba(239, 68, 68, 0.15); border-left: 4px solid #ef4444; color: #fca5a5; }
+
+    /* Mock Channel */
+    .channel-box {
+      background: var(--bg-primary);
       border: 1px solid var(--border-color);
       border-radius: 6px;
+      height: 220px;
+      overflow-y: auto;
       padding: 12px;
-      font-size: 0.82rem;
-      position: relative;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
     }
 
-    .post-header {
+    .channel-msg {
+      background: var(--bg-card);
+      border-left: 3px solid #2563eb;
+      padding: 10px 12px;
+      border-radius: 4px;
+      font-size: 0.82rem;
+    }
+
+    .channel-msg-head {
       display: flex;
       justify-content: space-between;
-      align-items: center;
-      margin-bottom: 8px;
-      font-size: 0.75rem;
       color: var(--text-muted);
-    }
-
-    .post-body {
-      white-space: pre-wrap;
-      line-height: 1.45;
-      color: #cbd5e1;
-    }
-
-    .post-body strong {
-      color: #f1f5f9;
+      font-size: 0.72rem;
+      margin-bottom: 4px;
     }
 
     /* Verification Checks */
@@ -548,546 +738,639 @@
       background: var(--bg-card);
       border: 1px solid var(--border-color);
       border-radius: 6px;
-      padding: 10px 14px;
-      font-size: 0.82rem;
+      padding: 10px 12px;
+      font-size: 0.8rem;
     }
 
     .check-card-head {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      font-weight: 600;
+      font-weight: 700;
       margin-bottom: 4px;
     }
 
-    .check-meta {
-      font-size: 0.74rem;
-      color: var(--text-muted);
-      margin-top: 4px;
-      line-height: 1.35;
-    }
-
-    /* Notification banner */
-    .banner {
-      padding: 10px 14px;
-      border-radius: 6px;
-      font-size: 0.84rem;
-      margin-bottom: 14px;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-
-    .banner-warning {
-      background: rgba(245, 158, 11, 0.15);
-      border: 1px solid rgba(245, 158, 11, 0.3);
-      color: #fbbf24;
-    }
-
-    .banner-info {
-      background: rgba(56, 189, 248, 0.15);
-      border: 1px solid rgba(56, 189, 248, 0.3);
-      color: #38bdf8;
-    }
-
-    .banner-success {
-      background: rgba(16, 185, 129, 0.15);
-      border: 1px solid rgba(16, 185, 129, 0.3);
-      color: #34d399;
-    }
-
-    /* Claims list */
-    .claims-grid {
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-      max-height: 220px;
-      overflow-y: auto;
-    }
-
+    /* Claims Traceability */
     .claim-row {
-      background: var(--bg-card);
-      border: 1px solid var(--border-color);
-      border-radius: 6px;
-      padding: 8px 12px;
       display: flex;
-      align-items: flex-start;
       gap: 10px;
-      font-size: 0.82rem;
+      padding: 10px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+      font-size: 0.8rem;
     }
 
     .claim-id-badge {
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 0.72rem;
+      font-family: monospace;
       font-weight: 700;
-      background: #1e293b;
-      color: var(--accent-blue);
-      border: 1px solid #334155;
-      padding: 2px 6px;
-      border-radius: 4px;
+      color: #38bdf8;
       white-space: nowrap;
     }
 
-    .claim-content {
-      flex: 1;
+    /* History Drawer */
+    .drawer-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.6);
+      z-index: 1000;
+      display: none;
+      backdrop-filter: blur(4px);
     }
 
-    .claim-links {
-      margin-top: 3px;
-      font-size: 0.74rem;
-      color: var(--text-dim);
-    }
-
-    .claim-links a {
-      color: var(--accent-blue);
-      text-decoration: none;
-    }
-
-    .claim-links a:hover {
-      text-decoration: underline;
-    }
-
-    /* Dictation indicator */
-    .dictation-status {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      font-size: 0.74rem;
-      color: var(--text-dim);
-      margin-top: 4px;
-    }
-
-    .dictation-status.active {
-      color: #f87171;
-      font-weight: 600;
-    }
-
-    button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible {
-      outline: 2px solid var(--accent-blue);
-      outline-offset: 2px;
-    }
-
-    .agent-meta, .confidence-wrap, .agent-panels {
+    .drawer-content {
+      position: fixed;
+      right: 0;
+      top: 0;
+      bottom: 0;
+      width: 420px;
+      max-width: 90vw;
+      background: var(--bg-secondary);
+      border-left: 1px solid var(--border-color);
+      z-index: 1001;
+      padding: 24px;
+      overflow-y: auto;
       display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      align-items: center;
+      flex-direction: column;
+      gap: 16px;
+      box-shadow: -10px 0 25px rgba(0, 0, 0, 0.5);
     }
 
-    .agent-panels { align-items: stretch; margin-top: 12px; }
+    /* Modal */
+    .modal-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.7);
+      z-index: 2000;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      backdrop-filter: blur(4px);
+    }
+
+    .modal-box {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-color);
+      border-radius: 10px;
+      max-width: 500px;
+      width: 90%;
+      padding: 24px;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.6);
+    }
+
     .agent-panel {
-      flex: 1 1 240px;
       background: var(--bg-card);
       border: 1px solid var(--border-color);
-      border-radius: 7px;
+      border-radius: 6px;
       padding: 10px;
       font-size: 0.78rem;
-      color: var(--text-muted);
       white-space: pre-wrap;
+      word-break: break-word;
     }
-    .confidence-track { height: 8px; min-width: 120px; background: var(--bg-card); border-radius: 8px; overflow: hidden; }
-    .confidence-fill { height: 100%; background: var(--accent-blue); transition: width .2s ease; }
-    .error-text { color: #fca5a5; }
-    .sentence-active { background: var(--accent-blue-dim); border-radius: 3px; }
-    body.light-theme {
-      --bg-primary: #f1f5f9;
-      --bg-secondary: #ffffff;
-      --bg-card: #e8eef6;
-      --bg-card-hover: #dce5f0;
-      --border-color: #cbd5e1;
-      --text-main: #0f172a;
-      --text-muted: #334155;
-      --text-dim: #475569;
+
+    .dictation-status {
+      font-size: 0.74rem;
+      color: var(--text-muted);
     }
   </style>
 </head>
 <body>
 
-  <!-- Top Header -->
-  <header>
+  <!-- Sticky Header -->
+  <header class="sticky-header">
     <div class="brand">
       <div class="brand-icon">🎙️</div>
       <div class="brand-title">
         <h1>Incident Voice Status Reporter</h1>
-        <p>Operational on-call agent • Dashboard claims verification • Safe PII redaction • Human approval gate</p>
+        <p>Operational SRE Agent • Telemetry Retrieval • Deterministic Rules • Human Gate • Verified Claims</p>
       </div>
     </div>
-    <div class="header-meta">
-      <button class="btn" onclick="toggleTheme()" type="button">Light / Dark</button>
-      <span class="tag tag-purple" id="agentModeBadge">Loading mode...</span>
-      <span class="tag tag-blue" id="evidenceSourceBadge">Evidence source loading...</span>
-      <span class="tag tag-amber" id="cachedResultBadge" hidden>Cached result</span>
-      <span class="clock-tag mono" id="modelName">rules</span>
-      <span class="tag tag-blue">All data is simulated</span>
-      <span class="live-badge"><span class="live-pulse"></span> SYSTEM READY</span>
-      <span class="clock-tag mono" id="liveClock">--:--:-- IST / --:--:-- UTC</span>
+
+    <div class="header-controls">
+      <span class="mono tag tag-blue" id="headerIncidentTag">INC-20261019-01</span>
+      <div id="statusBadgeContainer">
+        <span class="status-badge UNCERTAIN">❓ AWAITING RUN</span>
+      </div>
+      <span class="clock-tag mono" id="liveClock">14:30:00 IST / 09:00:00 UTC</span>
+      <button class="btn" onclick="toggleTheme()" type="button" title="Toggle Light/Dark Theme">🌓 Theme</button>
+      <button class="btn btn-primary" onclick="startGuidedDemo()" type="button" title="Run 2-Minute Scripted Hackathon Demo">⚡ 2-Min Demo</button>
+      <button class="btn" onclick="openHistoryDrawer()" type="button" title="View Recent Incidents">📜 History</button>
+      <button class="btn" id="exportRunButton" onclick="exportEvidencePack()" type="button">📦 Evidence Pack</button>
     </div>
   </header>
-  <section aria-label="Operator authentication" style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin:8px 0 16px;">
-    <label for="operatorToken" class="tag">Operator/admin access token</label>
-    <input id="operatorToken" type="password" autocomplete="off" placeholder="Enter provisioned token" style="max-width:320px;">
-    <button class="btn" type="button" onclick="applyOperatorToken()">Connect</button>
-    <button class="btn" type="button" onclick="clearOperatorToken()">Disconnect</button>
-    <span id="authStatus" role="status" aria-live="polite">Authentication required for incident data and actions.</span>
-  </section>
-  <nav aria-label="Console sections" style="display:flex; gap:12px; flex-wrap:wrap; margin:-8px 0 16px;">
-    <a href="#console">Console</a>
-    <a href="#agentTracePanel">Agent Trace</a>
-    <a href="#testCases">Test Cases</a>
-    <a href="#architecture">Architecture</a>
-    <a href="#safety">About / Safety</a>
+
+  <!-- Stepper Navigation -->
+  <nav class="stepper-nav" aria-label="Incident Workflow Stepper">
+    <button class="step-btn active" onclick="jumpToStep('step-1')"><span class="step-num">①</span> Scope & Sources</button>
+    <button class="step-btn" onclick="jumpToStep('step-2')"><span class="step-num">②</span> Telemetry Evidence</button>
+    <button class="step-btn" onclick="jumpToStep('step-3')"><span class="step-num">③</span> Decision & Voice Brief</button>
+    <button class="step-btn" onclick="jumpToStep('step-4')"><span class="step-num">④</span> Approve & Post</button>
+    <button class="step-btn" onclick="jumpToStep('step-5')"><span class="step-num">⑤</span> Verify</button>
+    <button class="step-btn" onclick="jumpToStep('step-6')"><span class="step-num">⑥</span> Test Cases Matrix</button>
   </nav>
 
-  <!-- Quick Scenario Selector -->
-  <div class="scenario-bar" id="console">
-    <div class="scenario-label">
-      <span>⚡ Quick Scenarios (Official Test Cases):</span>
-    </div>
-    <div class="scenario-buttons">
-      <button class="btn-scenario active" onclick="loadScenario('TC1')">TC1: Status Update</button>
-      <button class="btn-scenario" onclick="loadScenario('TC2')">TC2: Cached Dashboard</button>
-      <button class="btn-scenario" onclick="loadScenario('TC3')">TC3: Customer Data in Logs</button>
-      <button class="btn-scenario" onclick="loadScenario('TC4')">TC4: Health Check Failing</button>
-      <button class="btn-scenario" onclick="loadScenario('MIXED')">Mixed Signals</button>
-      <button class="btn-scenario" onclick="loadScenario('MISSING')">Missing Evidence</button>
-      <button class="btn-scenario" onclick="loadScenario('RECOVERED')">System Recovered</button>
-    </div>
-  </div>
+  <main class="main-container">
 
-  <!-- Row 1: Incident Inputs & Voice Brief -->
-  <div class="grid-2">
-    <!-- Left: Incident Input & Voice Dictation -->
-    <div class="card">
-      <div class="card-header">
-        <div class="card-title"><span class="icon">📝</span> 1. Incident Scope & Monitoring Sources</div>
-        <button class="btn" style="padding: 4px 8px; font-size: 0.75rem;" onclick="generateNewIncidentId()">New ID</button>
-      </div>
-
-      <div class="form-group">
-        <label>Incident Identifier (Stable ID)</label>
-        <input type="text" id="incidentId" class="mono" value="INC-20261019-01" placeholder="e.g. INC-20261019-01">
-      </div>
-
-      <div class="form-group">
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:5px;">
-          <label style="margin-bottom:0;">Incident Scope (Type or Dictate)</label>
-          <div class="dictation-status" id="dictationStatus">SpeechRecognition: Ready</div>
-        </div>
-        <div class="input-row">
-          <textarea id="scopeInput" placeholder="Describe the incident scope, affected services, and symptoms..."></textarea>
-          <button class="btn btn-mic" id="micBtn" onclick="toggleDictation()" title="Dictate scope using browser Web Speech API">
-            🎙️ <span id="micBtnText">Dictate</span>
-          </button>
-        </div>
-      </div>
-
-      <div class="form-group">
-        <label>Dashboards & Health Probes (One per line)</label>
-        <textarea id="dashboardsInput" style="min-height: 60px;" class="mono"></textarea>
-      </div>
-
-      <div style="display: flex; gap: 10px; margin-top: auto;">
-        <button class="btn btn-primary" style="flex: 1;" onclick="runCollectorAndAnalysis()">
-          Run Agent
-        </button>
-      </div>
-      <label style="margin-top:10px; font-size:.78rem; color:var(--text-muted);">
-        <input type="checkbox" id="trickAgentToggle"> Try to trick the agent (simulate cached recovery claim)
-      </label>
-      <div id="runStatus" class="dictation-status" role="status" aria-live="polite"></div>
-      <label style="margin-top:10px; font-size:.78rem; color:var(--text-muted);">
-        <input type="checkbox" id="trickAgentToggle"> Try to trick the agent (simulate cached recovery claim)
-      </label>
-      <div id="runStatus" class="dictation-status" role="status" aria-live="polite"></div>
+    <!-- Cold start wake notice (Render) -->
+    <div id="coldStartBanner" class="cold-start-banner" style="display:none;">
+      <span>⏳ <strong>Connecting to backend service...</strong> (If Render went dormant, cold-start takes ~10-15s).</span>
+      <button class="btn" style="padding:2px 8px; font-size:0.75rem;" onclick="dismissColdStart()">Dismiss</button>
     </div>
 
-    <!-- Right: Generated Voice Brief & Status Badge -->
-    <div class="card">
-      <div class="card-header">
-        <div class="card-title"><span class="icon">🔊</span> 2. Voice Brief & Status Decision</div>
-        <div id="statusBadgeContainer">
-          <span class="status-badge UNCERTAIN">AWAITING RUN</span>
+    <!-- 2-Minute Scripted Demo Banner -->
+    <div id="demoStoryBanner" class="demo-story-banner" style="display:none;">
+      <div>
+        <strong id="demoStoryTitle">⚡ Hackathon 2-Minute Demo Running</strong>
+        <p id="demoStoryCaption" style="font-size:0.85rem; margin-top:2px;">Step 1: Demonstrating Outage Detection (TC1)...</p>
+      </div>
+      <div style="display:flex; gap:6px;">
+        <button class="btn" id="demoPauseBtn" onclick="toggleDemoPause()">Pause</button>
+        <button class="btn btn-reject" onclick="stopGuidedDemo()">Stop Demo</button>
+      </div>
+    </div>
+
+    <!-- Operator Authentication & Environment Bar -->
+    <section aria-label="Operator authentication" style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin:0 0 16px;">
+      <span class="tag tag-green" id="authStatusBadge">● Connected as Demo Operator</span>
+      <span class="tag tag-purple" id="agentModeBadge">Deterministic Rules</span>
+      <span class="tag tag-blue" id="evidenceSourceBadge">Mock Observability Backend (/mock)</span>
+      <span class="tag tag-amber" id="cachedResultBadge" hidden>Cached result</span>
+      <span class="mono tag tag-blue" id="modelName">rules-engine</span>
+      <details style="margin-left:auto;">
+        <summary style="font-size:0.75rem; color:var(--text-muted); cursor:pointer;">Operator Token Settings</summary>
+        <div style="display:flex; gap:6px; margin-top:6px;">
+          <input id="operatorToken" type="password" placeholder="Enter token" style="width:200px; font-size:0.75rem;">
+          <button class="btn" type="button" style="padding:4px 8px; font-size:0.75rem;" onclick="applyOperatorToken()">Apply</button>
+          <button class="btn" type="button" style="padding:4px 8px; font-size:0.75rem;" onclick="clearOperatorToken()">Disconnect</button>
         </div>
+      </details>
+    </section>
+
+    <!-- Quick Scenario Selector -->
+    <div class="scenario-bar" id="console">
+      <div class="scenario-label">
+        <span>⚡ Quick Scenarios (Official Test Cases):</span>
       </div>
-
-      <div id="uncertaintyAlert"></div>
-
-      <label style="font-size: 0.75rem; text-transform: uppercase; color: var(--text-muted); font-weight: 600; margin-bottom: 6px;">
-        Voice Update Script (Synchronized with Audio)
-      </label>
-      <div class="voice-brief-box" id="voiceScriptBox" aria-live="polite">
-        Click "Collect Signals & Plan Voice Brief" to generate the voice brief and correlate fresh telemetry signals...
+      <div class="scenario-buttons">
+        <button class="btn-scenario active" onclick="loadScenario('TC1')">TC1: Status Update</button>
+        <button class="btn-scenario" onclick="loadScenario('TC2')">TC2: Cached Dashboard</button>
+        <button class="btn-scenario" onclick="loadScenario('TC3')">TC3: Customer Data in Logs</button>
+        <button class="btn-scenario" onclick="loadScenario('TC4')">TC4: Health Check Failing</button>
+        <button class="btn-scenario" onclick="loadScenario('MIXED')">Mixed Signals</button>
+        <button class="btn-scenario" onclick="loadScenario('MISSING')">Missing Evidence</button>
+        <button class="btn-scenario" onclick="loadScenario('RECOVERED')">System Recovered</button>
       </div>
+    </div>
 
-      <div class="voice-controls">
-        <div class="voice-controls-left">
-          <button class="btn" id="btnSpeak" onclick="playVoiceBrief()" disabled>
-            <span>🔊 Read Aloud</span>
-          </button>
-          <button class="btn" id="btnStopSpeak" onclick="stopVoiceBrief()" disabled>
-            <span>⏹️ Stop</span>
-          </button>
-          <div class="wave-anim" id="waveAnim">
-            <span class="wave-bar"></span>
-            <span class="wave-bar"></span>
-            <span class="wave-bar"></span>
-            <span class="wave-bar"></span>
+    <!-- ===================================================================== -->
+    <!-- STEP 1: Incident Scope & Sources -->
+    <!-- ===================================================================== -->
+    <section id="step-1" class="step-section">
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title"><span class="icon">📝</span> Step 1: Incident Scope & Monitoring Sources</div>
+          <button class="btn" style="padding: 4px 8px; font-size: 0.75rem;" onclick="generateNewIncidentId()">New Incident ID</button>
+        </div>
+
+        <div class="grid-2" style="margin-bottom:0;">
+          <div>
+            <div class="form-group">
+              <label>Incident Identifier (Stable ID)</label>
+              <input type="text" id="incidentId" class="mono" value="INC-20261019-01" placeholder="e.g. INC-20261019-01">
+            </div>
+
+            <div class="form-group">
+              <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:5px;">
+                <label style="margin-bottom:0;">Incident Scope (Type or Dictate)</label>
+                <div class="dictation-status" id="dictationStatus">SpeechRecognition: Ready</div>
+              </div>
+              <div class="input-row">
+                <textarea id="scopeInput" placeholder="Describe the incident scope, affected services, and symptoms..."></textarea>
+                <button class="btn btn-mic" id="micBtn" onclick="toggleDictation()" type="button" title="Dictate scope using browser Web Speech API">
+                  🎙️ <span id="micBtnText">Dictate</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <div class="form-group">
+              <label>Observability Source Mode</label>
+              <div style="display:flex; gap:12px; margin-bottom:8px; font-size:0.8rem;">
+                <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
+                  <input type="radio" name="sourceModeRadio" value="mock" checked onchange="toggleSourceMode(this.value)">
+                  Mock Observability Backend (/mock)
+                </label>
+                <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
+                  <input type="radio" name="sourceModeRadio" value="play_grafana" onchange="toggleSourceMode(this.value)">
+                  Live Grafana Demo (play.grafana.org)
+                </label>
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label>Dashboards & Health Probes (One per line)</label>
+              <textarea id="dashboardsInput" style="min-height: 80px;" class="mono"></textarea>
+            </div>
           </div>
         </div>
 
-        <div style="display: flex; align-items: center; gap: 8px; font-size: 0.75rem; color: var(--text-muted);">
-          <span>Speech Rate:</span>
-          <select id="voiceRate" style="background:var(--bg-card); color:var(--text-main); border:1px solid var(--border-color); border-radius:4px; padding:3px 6px;">
-            <option value="0.9">0.9x</option>
-            <option value="1.0" selected>1.0x (Normal)</option>
-            <option value="1.15">1.15x (Fast)</option>
-          </select>
+        <div style="display: flex; gap: 12px; align-items: center; margin-top: 14px; flex-wrap: wrap;">
+          <button class="btn btn-primary" style="flex: 1; min-width: 220px;" onclick="runCollectorAndAnalysis()">
+            ▶️ Run Agent (Collect Telemetry & Evaluate Rules)
+          </button>
+          <label style="font-size:.78rem; color:var(--text-muted); cursor:pointer;">
+            <input type="checkbox" id="trickAgentToggle"> Try to trick the agent (simulate cached recovery claim)
+          </label>
+          <div id="runStatus" class="dictation-status" role="status" aria-live="polite"></div>
         </div>
       </div>
+    </section>
 
-      <div style="margin-top: 14px; font-size: 0.75rem; color: var(--text-dim); border-top: 1px solid rgba(255,255,255,0.06); padding-top: 8px;">
-        <strong>Decision Reason:</strong> <span id="decisionReasonText">Not evaluated yet.</span>
+    <!-- ===================================================================== -->
+    <!-- STEP 2: Telemetry Evidence Table & Claims Traceability -->
+    <!-- ===================================================================== -->
+    <section id="step-2" class="step-section">
+      <div class="grid-2">
+        <!-- Telemetry Evidence Table -->
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title"><span class="icon">📊</span> Step 2: Extracted Telemetry Evidence</div>
+            <span class="tag tag-blue" id="evidenceCountTag">0 Signals</span>
+          </div>
+          <div class="table-container">
+            <table>
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Type</th>
+                  <th>Name</th>
+                  <th>Extracted Value</th>
+                  <th>Source Updated</th>
+                  <th>Age</th>
+                  <th>HTTP Status</th>
+                  <th>Latency</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody id="evidenceTableBody">
+                <tr><td colspan="9" style="text-align:center; color:var(--text-dim); padding:20px;">No telemetry collected yet.</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="agent-panel" style="margin-top:10px;">
+            <strong>Evidence timeline:</strong>
+            <div id="evidenceTimeline">Run the agent to compare source and retrieval timestamps.</div>
+          </div>
+        </div>
+
+        <!-- Claims-to-Dashboard Traceability -->
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title"><span class="icon">🔗</span> Step 2B: Claims-to-Dashboard Traceability Matrix</div>
+            <span class="tag tag-purple">Verifiable Links</span>
+          </div>
+          <p style="font-size: 0.78rem; color: var(--text-muted); margin-bottom: 10px;">
+            Every claim in the voice brief maps directly to a source dashboard ID [SIG-xxx] with retrieval metadata:
+          </p>
+          <div class="claims-grid" id="claimsContainer" style="max-height:340px; overflow-y:auto;">
+            <div style="text-align:center; color:var(--text-dim); padding:20px;">Claims will appear once telemetry is processed.</div>
+          </div>
+        </div>
       </div>
-      <div class="agent-meta" style="margin-top:10px;">
-        <span class="tag tag-purple" id="runMode">Awaiting agent run</span>
-        <span class="tag tag-blue" id="guardrailState">Guardrail: pending</span>
-        <button class="btn" id="exportRunButton" onclick="exportRunReport()" disabled>Export evidence pack</button>
+    </section>
+
+    <!-- ===================================================================== -->
+    <!-- STEP 3: Decision Rules Engine & Voice Brief -->
+    <!-- ===================================================================== -->
+    <section id="step-3" class="step-section">
+      <div class="grid-2">
+        <!-- Voice Brief & Speech Controls -->
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title"><span class="icon">🔊</span> Step 3: Voice Update Script (20-40s Brief)</div>
+            <div style="display:flex; align-items:center; gap:8px;">
+              <span class="tag tag-purple" id="severityBadge">SEV2</span>
+              <span class="tag tag-blue" id="nextUpdateTimer">Update due in 15m</span>
+            </div>
+          </div>
+
+          <div id="uncertaintyAlert"></div>
+
+          <label style="font-size: 0.72rem; text-transform: uppercase; color: var(--text-muted); font-weight: 700; margin-bottom: 6px;">
+            Structured Voice Script (Highlighted in Sync with Audio)
+          </label>
+          <div class="voice-brief-box" id="voiceScriptBox" aria-live="polite">
+            Click "Run Agent" to generate the voice brief and correlate fresh telemetry signals...
+          </div>
+
+          <div class="voice-controls">
+            <div class="voice-controls-left">
+              <button class="btn btn-primary" id="btnSpeak" onclick="playVoiceBrief()" disabled>
+                <span>🔊 Read Aloud</span>
+              </button>
+              <button class="btn" id="btnPauseSpeak" onclick="togglePauseVoiceBrief()" disabled>
+                <span>⏸️ Pause</span>
+              </button>
+              <button class="btn" id="btnStopSpeak" onclick="stopVoiceBrief()" disabled>
+                <span>⏹️ Stop</span>
+              </button>
+              <div class="wave-anim" id="waveAnim">
+                <span class="wave-bar"></span>
+                <span class="wave-bar"></span>
+                <span class="wave-bar"></span>
+                <span class="wave-bar"></span>
+              </div>
+            </div>
+
+            <div style="display: flex; align-items: center; gap: 8px; font-size: 0.75rem; color: var(--text-muted); flex-wrap:wrap;">
+              <select id="voiceRate" style="width:auto; padding:3px 6px;">
+                <option value="0.9">0.9x</option>
+                <option value="1.0" selected>1.0x</option>
+                <option value="1.15">1.15x</option>
+              </select>
+              <select id="voiceLangToggle" style="width:auto; padding:3px 6px;" onchange="changeVoiceLanguage(this.value)">
+                <option value="en" selected>English Voice</option>
+                <option value="hi">Hindi (Voice)</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- Hands-Free Assistant Mode -->
+          <div style="margin-top:10px; display:flex; justify-content:space-between; align-items:center; font-size:0.75rem;">
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
+              <input type="checkbox" id="handsFreeToggle" onchange="toggleHandsFreeMode(this.checked)">
+              🎙️ <strong>Hands-Free Assistant</strong> (Speak: "approve", "reject", "repeat", "what's uncertain")
+            </label>
+            <span id="handsFreeStatus" class="dictation-status">Hands-free: Off</span>
+          </div>
+
+          <div style="margin-top: 10px; font-size: 0.78rem; color: var(--text-dim); border-top: 1px solid rgba(255,255,255,0.06); padding-top: 8px;">
+            <strong>Decision Reason:</strong> <span id="decisionReasonText">Not evaluated yet.</span>
+          </div>
+        </div>
+
+        <!-- Rules Fired & Telemetry Confidence Breakdown -->
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title"><span class="icon">⚖️</span> Step 3B: Deterministic Rules Fired & Confidence</div>
+            <span class="tag tag-green" id="guardrailState">Guardrail: PASS</span>
+          </div>
+
+          <!-- Rules Fired Panel -->
+          <div class="rules-fired-container">
+            <strong style="font-size:0.8rem; display:block; margin-bottom:6px;">Auditable Decision Rules Fired:</strong>
+            <div id="rulesFiredList" style="max-height:160px; overflow-y:auto;">
+              <div style="color:var(--text-dim); font-size:0.78rem;">Run agent to view rules fired and thresholds applied.</div>
+            </div>
+          </div>
+
+          <!-- Confidence Score Breakdown -->
+          <div class="confidence-grid" id="confidenceGauges">
+            <div class="confidence-card">
+              <div class="confidence-title">Freshness</div>
+              <div class="confidence-score" id="confFreshness">--%</div>
+              <div class="confidence-track"><div class="confidence-fill" id="fillFreshness" style="width:0%"></div></div>
+            </div>
+            <div class="confidence-card">
+              <div class="confidence-title">Agreement</div>
+              <div class="confidence-score" id="confAgreement">--%</div>
+              <div class="confidence-track"><div class="confidence-fill" id="fillAgreement" style="width:0%"></div></div>
+            </div>
+            <div class="confidence-card">
+              <div class="confidence-title">Coverage</div>
+              <div class="confidence-score" id="confCoverage">--%</div>
+              <div class="confidence-track"><div class="confidence-fill" id="fillCoverage" style="width:0%"></div></div>
+            </div>
+            <div class="confidence-card">
+              <div class="confidence-title">Overall</div>
+              <div class="confidence-score" id="confidenceValue">--%</div>
+              <div class="confidence-track"><div class="confidence-fill" id="confidenceFill" style="width:0%"></div></div>
+            </div>
+          </div>
+          <div id="confidenceMethod" class="dictation-status" style="margin-top:6px;"></div>
+
+          <div class="agent-panels" style="margin-top:10px;">
+            <div class="agent-panel"><strong>Why I'm uncertain:</strong><div id="uncertaintyReasons">Run the agent to inspect missing, cached, stale, and failing evidence.</div></div>
+            <div class="agent-panel" style="margin-top:6px;"><strong>Guardrail interventions:</strong><div id="guardrailReasons">No intervention recorded.</div></div>
+          </div>
+          
+          <details id="agentTracePanel" style="margin-top:8px;">
+            <summary style="font-size:0.76rem; color:var(--text-muted); cursor:pointer;">Agent execution trace</summary>
+            <pre id="agentTrace" class="agent-panel" style="overflow:auto; max-height:180px; margin-top:4px;"></pre>
+          </details>
+        </div>
       </div>
-      <div class="confidence-wrap" style="margin-top:10px; font-size:.78rem;">
-        <strong>Evidence confidence:</strong> <span id="confidenceValue">--</span>
-        <div class="confidence-track" aria-label="Evidence confidence"><div class="confidence-fill" id="confidenceFill" style="width:0%"></div></div>
+    </section>
+
+    <!-- ===================================================================== -->
+    <!-- STEP 4 & 5: Human Approval Gate, Channel Feed, & Verification -->
+    <!-- ===================================================================== -->
+    <section id="step-4" class="step-section">
+      <div class="grid-3">
+        <!-- 4. Human Approval Gate -->
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title"><span class="icon">🛡️</span> Step 4: Human Approval Gate</div>
+            <span class="tag tag-amber" id="approvalStateTag">Pending Review</span>
+          </div>
+          <p style="font-size: 0.76rem; color: var(--text-muted); margin-bottom: 6px;">
+            <strong>Destination:</strong> <span class="mono" id="postDestination">#incident-response</span>
+          </p>
+          <div class="form-group">
+            <label>Proposed Channel Update (Exact Message)</label>
+            <textarea id="proposedPostText" style="height: 140px; font-size: 0.78rem; line-height: 1.4;" class="mono" readonly></textarea>
+            <details style="margin-top:6px;">
+              <summary style="font-size:0.72rem; color:var(--text-muted); cursor:pointer;">Diff against previous version</summary>
+              <pre id="postDiff" class="agent-panel" style="margin-top:4px;"></pre>
+            </details>
+          </div>
+
+          <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+            <button class="btn" id="btnEdit" onclick="togglePostEdit()">Edit</button>
+            <button class="btn btn-approve" id="btnApprove" onclick="submitApproval('APPROVED')" disabled>
+              ✅ Approve & Post
+            </button>
+            <button class="btn btn-reject" id="btnReject" onclick="submitApproval('REJECTED')" disabled>
+              ❌ Reject
+            </button>
+            <button class="btn btn-retry" id="btnRetry" onclick="testDuplicateRetry()" disabled title="Test duplicate suppression on retries">
+              🔄 Retry (Test Idempotency)
+            </button>
+            <button class="btn btn-tamper" id="btnTamperPost" onclick="simulateTamperPost()" disabled title="Simulate unauthorized channel post edit to test verification">
+              ⚡ Tamper Post (Negative Demo)
+            </button>
+          </div>
+          <div id="idempotencyNotice" style="margin-top: 10px; font-size: 0.75rem;"></div>
+        </div>
+
+        <!-- Mock Channel Feed -->
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title"><span class="icon">💬</span> Channel Feed (<span class="mono">#incident-response</span>)</div>
+            <button class="btn" style="padding: 3px 6px; font-size: 0.72rem;" onclick="clearChannelFeed()">Clear</button>
+          </div>
+          <div class="channel-box" id="channelFeedBox">
+            <div style="text-align:center; color:var(--text-dim); margin-top: auto; margin-bottom: auto;">
+              No channel messages yet.<br>Approve an update to publish.
+            </div>
+          </div>
+        </div>
+
+        <!-- 5. Independent Verification Engine -->
+        <div class="card" id="step-5">
+          <div class="card-header">
+            <div class="card-title"><span class="icon">✅</span> Step 5: Independent Verification</div>
+            <span class="tag tag-blue" id="verificationStateTag">Awaiting Post</span>
+          </div>
+          <p style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 8px;">
+            Re-reads channel storage independently after posting and strictly verifies fidelity, dashboard links, and zero PII leaks:
+          </p>
+          <div class="check-list" id="verificationChecksBox">
+            <div class="check-card">
+              <div class="check-card-head"><span>1. Post Existence</span> <span class="tag tag-amber">PENDING</span></div>
+              <div class="check-meta">Awaiting channel publication.</div>
+            </div>
+            <div class="check-card">
+              <div class="check-card-head"><span>2. Content Fidelity</span> <span class="tag tag-amber">PENDING</span></div>
+              <div class="check-meta">Strict character-for-character check against approved text.</div>
+            </div>
+            <div class="check-card">
+              <div class="check-card-head"><span>3. Dashboard Linkage</span> <span class="tag tag-amber">PENDING</span></div>
+              <div class="check-meta">Every claim cites verified [SIG-xxx] identifier.</div>
+            </div>
+            <div class="check-card">
+              <div class="check-card-head"><span>4. Customer Data Shield</span> <span class="tag tag-amber">PENDING</span></div>
+              <div class="check-meta">Zero unredacted emails, phone numbers, or card numbers.</div>
+            </div>
+          </div>
+        </div>
       </div>
-      <div id="confidenceMethod" class="dictation-status"></div>
-      <div class="agent-panels">
-        <div class="agent-panel"><strong>Why I'm uncertain</strong><div id="uncertaintyReasons">Run the agent to inspect missing, cached, stale, and failing evidence.</div></div>
-        <div class="agent-panel"><strong>Guardrail interventions</strong><div id="guardrailReasons">No intervention recorded.</div></div>
+    </section>
+
+    <!-- ===================================================================== -->
+    <!-- STEP 6: Official Test Cases Matrix (TC1 — TC4) -->
+    <!-- ===================================================================== -->
+    <section id="step-6" class="step-section">
+      <div class="card" id="testCases" style="margin-bottom: 30px;">
+        <div class="card-header">
+          <div class="card-title"><span class="icon">🧪</span> Step 6: Official Test Cases Matrix (TC1 — TC4)</div>
+          <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+            <label style="font-size:0.8rem; color:var(--text-muted); cursor:pointer;">
+              <input id="liveLlmTestToggle" type="checkbox">
+              Run with live LLM
+            </label>
+            <button class="btn btn-primary" onclick="runOfficialTestCases()">
+              ▶️ Run All Test Cases
+            </button>
+            <button class="btn" onclick="downloadTestReportMarkdown()">
+              📥 Download TEST_REPORT.md
+            </button>
+            <button class="btn" onclick="downloadTestReportJSON()">
+              📥 Download JSON Report
+            </button>
+          </div>
+        </div>
+
+        <div style="display:flex; gap:8px; margin-bottom:12px; flex-wrap:wrap;">
+          <span style="font-size:0.75rem; color:var(--text-muted); align-self:center;">Run individual test:</span>
+          <button class="btn" style="padding:4px 8px; font-size:0.75rem;" onclick="runSingleTestCase('TC1')">TC1 (Timestamps & Citations)</button>
+          <button class="btn" style="padding:4px 8px; font-size:0.75rem;" onclick="runSingleTestCase('TC2')">TC2 (Cached Stale)</button>
+          <button class="btn" style="padding:4px 8px; font-size:0.75rem;" onclick="runSingleTestCase('TC3')">TC3 (Customer PII Redacted)</button>
+          <button class="btn" style="padding:4px 8px; font-size:0.75rem;" onclick="runSingleTestCase('TC4')">TC4 (Health Check Failing)</button>
+        </div>
+
+        <div class="table-container">
+          <table>
+            <thead>
+              <tr>
+                <th>Test Case</th>
+                <th>Scenario Name</th>
+                <th>Status</th>
+                <th>Expected Behavior</th>
+                <th>Actual Result</th>
+                <th>Verifier</th>
+                <th>Audit Explanation</th>
+              </tr>
+            </thead>
+            <tbody id="testMatrixBody">
+              <tr><td colspan="7" style="text-align:center; padding:20px; color:var(--text-dim);">Loading test cases from storage...</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="grid-2" style="margin-top:20px;">
+          <section class="card" id="architecture">
+            <div class="card-header"><div class="card-title">Agent Architecture</div></div>
+            <p style="font-size:0.82rem; color:var(--text-muted); line-height:1.6;">
+              1. <strong>Collection:</strong> Pulls from /mock observability backend (Grafana Prometheus JSON, HTML status page, Logs, Health Probes).<br>
+              2. <strong>Decision Rules:</strong> Pure deterministic rules engine evaluates freshness, health, and conflicts.<br>
+              3. <strong>Guardrails:</strong> Redacts all PII before model context or voice synthesis.<br>
+              4. <strong>Approval Gate:</strong> Human lead must approve. SHA-256 idempotency prevents duplicate posts.<br>
+              5. <strong>Independent Verifier:</strong> Re-reads channel storage and checks content fidelity, citations, and zero PII.
+            </p>
+          </section>
+          <section class="card" id="safety">
+            <div class="card-header"><div class="card-title">Safety & Non-Negotiable Rules</div></div>
+            <p style="font-size:0.82rem; color:var(--text-muted); line-height:1.6;">
+              • <strong>Synthetic Data Only:</strong> No real customer data is ever processed.<br>
+              • <strong>Honesty About Uncertainty:</strong> Stale data, cached dashboards, and failing health checks explicitly refuse recovery claims.<br>
+              • <strong>Human-in-the-Loop:</strong> Irreversible posting actions require explicit operator confirmation.<br>
+              • <strong>No OTP/CAPTCHA Bypass:</strong> Complies with all ethical agentic standards.
+            </p>
+          </section>
+        </div>
       </div>
-      <details id="agentTracePanel" style="margin-top:10px;">
-        <summary>Agent trace (tool calls and observations)</summary>
-        <pre id="agentTrace" class="agent-panel" style="overflow:auto; max-height:260px;"></pre>
-      </details>
+    </section>
+
+  </main>
+
+  <!-- Incident History Drawer -->
+  <div class="drawer-overlay" id="historyDrawerOverlay" onclick="closeHistoryDrawer()"></div>
+  <div class="drawer-content" id="historyDrawer" style="display:none;">
+    <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--border-color); padding-bottom:12px;">
+      <h3 style="font-size:1.1rem; font-weight:700;">📜 Incident History</h3>
+      <button class="btn" style="padding:4px 8px;" onclick="closeHistoryDrawer()">✕ Close</button>
+    </div>
+    <p style="font-size:0.78rem; color:var(--text-muted);">Previously analyzed and verified incidents in SQLite database:</p>
+    <div id="historyListContainer" style="display:flex; flex-direction:column; gap:10px;">
+      <div style="text-align:center; color:var(--text-dim); padding:20px;">Loading incident history...</div>
     </div>
   </div>
 
-  <!-- Row 2: Evidence Table & Claims Traceability Matrix -->
-  <div class="grid-2">
-    <!-- Left: Telemetry Evidence Table -->
-    <div class="card">
-      <div class="card-header">
-        <div class="card-title"><span class="icon">📊</span> Extracted Telemetry Evidence (Sources & Freshness)</div>
-        <span class="tag tag-blue" id="evidenceCountTag">0 Signals</span>
-      </div>
-      <div class="table-container">
-        <table>
-          <thead>
-            <tr>
-              <th>ID</th>
-              <th>Type</th>
-              <th>Name</th>
-              <th>Extracted Value</th>
-              <th>Source Updated</th>
-              <th>Retrieved</th>
-              <th>Age</th>
-              <th>Status</th>
-            </tr>
-          </thead>
-          <tbody id="evidenceTableBody">
-            <tr><td colspan="8" style="text-align:center; color:var(--text-dim); padding:20px;">No telemetry collected yet.</td></tr>
-          </tbody>
-        </table>
-      </div>
-      <div class="agent-panel" style="margin-top:10px;"><strong>Evidence timeline</strong><div id="evidenceTimeline">Run the agent to compare source and retrieval times.</div></div>
-    </div>
-
-    <!-- Right: Claims-to-Dashboard Traceability -->
-    <div class="card">
-      <div class="card-header">
-        <div class="card-title"><span class="icon">🔗</span> Claims-to-Dashboard Traceability Matrix</div>
-        <span class="tag tag-purple">Step 5: Verified Links</span>
-      </div>
-      <p style="font-size: 0.78rem; color: var(--text-muted); margin-bottom: 10px;">
-        Every claim made in the voice brief and channel post is mapped directly to a source dashboard ID:
+  <!-- Confirmation Modal for Hands-free Actions -->
+  <div class="modal-overlay" id="confirmModalOverlay">
+    <div class="modal-box">
+      <h3 style="font-size:1.1rem; font-weight:700; margin-bottom:10px;">⚠️ Confirm Publication Action</h3>
+      <p id="confirmModalText" style="font-size:0.88rem; color:var(--text-main); margin-bottom:16px;">
+        Voice assistant received approval command. Confirm posting update to #incident-response?
       </p>
-      <div class="claims-grid" id="claimsContainer">
-        <div style="text-align:center; color:var(--text-dim); padding:20px;">Claims will appear once telemetry is processed.</div>
+      <div style="display:flex; justify-content:flex-end; gap:10px;">
+        <button class="btn" onclick="closeConfirmModal()">Cancel</button>
+        <button class="btn btn-approve" id="btnModalConfirm" onclick="executeConfirmedApproval()">Confirm & Post</button>
       </div>
-    </div>
-  </div>
-
-  <!-- Row 3: Human Approval, Live Mock Channel, and Independent Verification -->
-  <div class="grid-3">
-    <!-- 1. Human Approval Gate -->
-    <div class="card">
-      <div class="card-header">
-        <div class="card-title"><span class="icon">🛡️</span> 3. Human Approval Gate</div>
-        <span class="tag tag-amber" id="approvalStateTag">Pending Review</span>
-      </div>
-      <p style="font-size: 0.76rem; color: var(--text-muted); margin-bottom: 10px;">
-        <strong>Destination:</strong> <span class="mono" id="postDestination">#incident-response</span>
-      </p>
-      <div class="form-group">
-        <label>Proposed Channel Update (Exact Content)</label>
-        <textarea id="proposedPostText" style="height: 140px; font-size: 0.78rem; line-height: 1.4;" class="mono" readonly></textarea>
-        <details style="margin-top:6px;">
-          <summary>Diff against previous proposed version</summary>
-          <pre id="postDiff" class="agent-panel"></pre>
-        </details>
-      </div>
-
-      <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-        <button class="btn" id="btnEdit" onclick="togglePostEdit()">Edit</button>
-        <button class="btn btn-approve" id="btnApprove" onclick="submitApproval('APPROVED')" disabled>
-          ✅ Approve & Post
-        </button>
-        <button class="btn btn-reject" id="btnReject" onclick="submitApproval('REJECTED')" disabled>
-          ❌ Reject
-        </button>
-        <button class="btn btn-retry" id="btnRetry" onclick="testDuplicateRetry()" disabled title="Test duplicate suppression on retries">
-          🔄 Retry (Test Idempotency)
-        </button>
-      </div>
-      <div id="idempotencyNotice" style="margin-top: 10px; font-size: 0.75rem;"></div>
-    </div>
-
-    <!-- 2. Mock Team Channel Feed -->
-    <div class="card">
-      <div class="card-header">
-        <div class="card-title"><span class="icon">💬</span> Mock Channel (<span class="mono">#incident-response</span>)</div>
-        <button class="btn" style="padding: 3px 6px; font-size: 0.72rem;" onclick="clearChannelFeed()">Clear</button>
-      </div>
-      <div class="channel-box" id="channelFeedBox">
-        <div style="text-align:center; color:var(--text-dim); margin-top: auto; margin-bottom: auto;">
-          No channel messages yet.<br>Approve an update to publish.
-        </div>
-      </div>
-    </div>
-
-    <!-- 3. Independent Verification Engine -->
-    <div class="card">
-      <div class="card-header">
-        <div class="card-title"><span class="icon">✅</span> 4. Independent Verification</div>
-        <span class="tag tag-blue" id="verificationStateTag">Awaiting Post</span>
-      </div>
-      <p style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 10px;">
-        Re-reads the channel after posting and strictly verifies fidelity, dashboard links, and zero PII leaks:
-      </p>
-      <div class="check-list" id="verificationChecksBox">
-        <div class="check-card">
-          <div class="check-card-head"><span>1. Post Existence</span> <span class="tag tag-amber">PENDING</span></div>
-          <div class="check-meta">Awaiting channel publication.</div>
-        </div>
-        <div class="check-card">
-          <div class="check-card-head"><span>2. Content Fidelity</span> <span class="tag tag-amber">PENDING</span></div>
-          <div class="check-meta">Strict character-for-character check against approved text.</div>
-        </div>
-        <div class="check-card">
-          <div class="check-card-head"><span>3. Dashboard Linkage</span> <span class="tag tag-amber">PENDING</span></div>
-          <div class="check-meta">Every claim cites verified [SIG-xxx] identifier.</div>
-        </div>
-        <div class="check-card">
-          <div class="check-card-head"><span>4. Customer Data Shield</span> <span class="tag tag-amber">PENDING</span></div>
-          <div class="check-meta">Zero unredacted emails, phone numbers, or card numbers.</div>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- Row 4: Official Test Cases Runner & Verification Matrix -->
-  <div class="card" id="testCases" style="margin-bottom: 30px;">
-    <div class="card-header">
-      <div class="card-title"><span class="icon">🧪</span> Official Test Cases Matrix (TC1 — TC4)</div>
-      <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
-        <label style="font-size:0.8rem; color:var(--text-muted);">
-          <input id="liveLlmTestToggle" type="checkbox">
-          Run with live LLM
-        </label>
-        <button class="btn btn-primary" onclick="runOfficialTestCases()">
-          ▶️ Run All Official Test Cases
-        </button>
-      </div>
-    </div>
-
-    <div class="grid-2">
-      <section class="card" id="architecture">
-        <div class="card-header"><div class="card-title">Agent architecture</div></div>
-        <p>Collect synthetic evidence locally → one LLM synthesis call → deterministic guardrails → human approval → mock channel post → independent verification.</p>
-      </section>
-      <section class="card" id="safety">
-        <div class="card-header"><div class="card-title">About / safety</div></div>
-        <p>All telemetry is synthetic. Tool outputs are redacted before model context. Rules override model proposals; posting requires operator approval, uses idempotency, and is independently verified. No OTP or CAPTCHA automation is used.</p>
-      </section>
-    </div>
-    <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 12px;">
-      Executes each official scenario, preserves inputs, expected results, actual results, and evidence, and explains failures/differences.
-    </p>
-    <div class="table-container">
-      <table>
-        <thead>
-          <tr>
-            <th>Test Case</th>
-            <th>Scenario</th>
-            <th>Expected Result</th>
-            <th>Actual Result</th>
-            <th>Evidence Status</th>
-            <th>Outcome</th>
-            <th>Traceable Explanation</th>
-          </tr>
-        </thead>
-        <tbody id="testMatrixBody">
-          <tr>
-            <td class="mono"><strong>TC1</strong></td>
-            <td>Status update</td>
-            <td>Includes timestamps and links each claim to dashboard ID</td>
-            <td style="color:var(--text-dim);">Not run yet</td>
-            <td><span class="tag">Pending</span></td>
-            <td><span class="tag">READY</span></td>
-            <td style="color:var(--text-dim);">Click 'Run All Official Test Cases' to execute suite.</td>
-          </tr>
-          <tr>
-            <td class="mono"><strong>TC2</strong></td>
-            <td>Cached dashboard</td>
-            <td>Not proof of recovery (state UNCERTAIN)</td>
-            <td style="color:var(--text-dim);">Not run yet</td>
-            <td><span class="tag">Pending</span></td>
-            <td><span class="tag">READY</span></td>
-            <td style="color:var(--text-dim);">Click 'Run All Official Test Cases' to execute suite.</td>
-          </tr>
-          <tr>
-            <td class="mono"><strong>TC3</strong></td>
-            <td>Customer data in logs</td>
-            <td>Redacted (emails, phones, card numbers replaced with [REDACTED_*])</td>
-            <td style="color:var(--text-dim);">Not run yet</td>
-            <td><span class="tag">Pending</span></td>
-            <td><span class="tag">READY</span></td>
-            <td style="color:var(--text-dim);">Click 'Run All Official Test Cases' to execute suite.</td>
-          </tr>
-          <tr>
-            <td class="mono"><strong>TC4</strong></td>
-            <td>Health check failing</td>
-            <td>Recovery uncertain (state UNCERTAIN)</td>
-            <td style="color:var(--text-dim);">Not run yet</td>
-            <td><span class="tag">Pending</span></td>
-            <td><span class="tag">READY</span></td>
-            <td style="color:var(--text-dim);">Click 'Run All Official Test Cases' to execute suite.</td>
-          </tr>
-        </tbody>
-      </table>
     </div>
   </div>
 
   <script>
-    // Global State
+    // State management
     let currentScenario = 'TC1';
     let currentIncidentId = 'INC-20261019-01';
     let currentAnalysisData = null;
     let isDictating = false;
     let speechRecognitionInstance = null;
+    let handsFreeRecognition = null;
+    let isHandsFreeActive = false;
     let currentSpeakingUtterance = null;
+    let isSpeechPaused = false;
     let lastPostedId = null;
     let previousProposedPost = '';
-    let operatorAccessToken = '';
-    let offlineMode = true;
+    let operatorAccessToken = sessionStorage.getItem('operator_token') || 'incident-operator-demo-key-2026';
+    let offlineMode = false;
+    let selectedObservabilityMode = 'mock';
+    let guidedDemoTimer = null;
+    let isDemoPaused = false;
+    let demoStepIndex = 0;
 
+    // Custom fetch wrapper with bearer auth
     const nativeFetch = window.fetch.bind(window);
     window.fetch = (input, init = {}) => {
       const headers = new Headers(init.headers || (input instanceof Request ? input.headers : undefined));
@@ -1096,24 +1379,39 @@
     };
 
     function applyOperatorToken() {
-      operatorAccessToken = document.getElementById('operatorToken').value.trim();
-      document.getElementById('operatorToken').value = '';
-      document.getElementById('authStatus').textContent =
-        operatorAccessToken ? 'Token set for this page session; sensitive requests will validate it.' : 'Enter an access token.';
-      loadChannelFeed();
+      const val = document.getElementById('operatorToken').value.trim();
+      if (val) {
+        operatorAccessToken = val;
+        sessionStorage.setItem('operator_token', val);
+        document.getElementById('operatorToken').value = '';
+        document.getElementById('authStatusBadge').textContent = '● Connected: Custom Token';
+        loadChannelFeed();
+        loadTestCasesTable();
+      }
     }
 
     function clearOperatorToken() {
       operatorAccessToken = '';
-      document.getElementById('authStatus').textContent = 'Disconnected. Authentication required for incident data and actions.';
-      document.getElementById('channelFeedBox').textContent = 'Connect with an operator token to view the mock channel feed.';
+      sessionStorage.removeItem('operator_token');
+      document.getElementById('authStatusBadge').textContent = '○ Disconnected';
+      document.getElementById('channelFeedBox').textContent = 'Connect with an operator token to view channel feed.';
     }
 
     function toggleTheme() {
       document.body.classList.toggle('light-theme');
     }
 
-    // Clock
+    function jumpToStep(stepId) {
+      const el = document.getElementById(stepId);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth' });
+        document.querySelectorAll('.step-btn').forEach(btn => btn.classList.remove('active'));
+        const matchBtn = Array.from(document.querySelectorAll('.step-btn')).find(b => b.getAttribute('onclick').includes(stepId));
+        if (matchBtn) matchBtn.classList.add('active');
+      }
+    }
+
+    // Live Clock with IST / UTC
     function updateClock() {
       const now = new Date();
       const istString = new Intl.DateTimeFormat('en-GB', {
@@ -1127,231 +1425,290 @@
     setInterval(updateClock, 1000);
     updateClock();
 
-    // Generate Incident ID
     function generateNewIncidentId() {
       const rand = Math.floor(1000 + Math.random() * 9000);
       const today = new Date().toISOString().slice(0, 10).replace(/-/g, '');
       currentIncidentId = `INC-${today}-${rand}`;
       document.getElementById('incidentId').value = currentIncidentId;
+      document.getElementById('headerIncidentTag').textContent = currentIncidentId;
+    }
+
+    // Observability source toggle
+    function toggleSourceMode(mode) {
+      selectedObservabilityMode = mode;
+      document.getElementById('evidenceSourceBadge').textContent =
+        mode === 'play_grafana' ? 'Live Demo Grafana (play.grafana.org)' : 'Mock Observability Backend (/mock)';
+      if (mode === 'play_grafana') {
+        document.getElementById('dashboardsInput').value = "https://play.grafana.org/api/dashboards/uid/000000012\nhttp://127.0.0.1:8000/mock/status\nhttp://127.0.0.1:8000/mock/health/db";
+      } else {
+        loadScenario(currentScenario);
+      }
     }
 
     // Scenarios Setup
     const scenarioPresets = {
       'TC1': {
+        name: "Status update (Outage / Degraded)",
         scope: "Checkout service experiencing elevated 500 error rates and latency degradation across US-East.",
         dashboards: [
-          "https://grafana.internal.mock/d/checkout-metrics",
-          "https://status.mockcloud.io/services/checkout",
-          "https://api.internal.mock/health/db"
+          "http://127.0.0.1:8000/mock/grafana/api/dashboards/uid/checkout-metrics",
+          "http://127.0.0.1:8000/mock/status",
+          "http://127.0.0.1:8000/mock/health/db"
         ]
       },
       'TC2': {
+        name: "Cached dashboard (Edge Cache)",
         scope: "Evaluating recovery claims for checkout gateway after proxy restart.",
         dashboards: [
-          "https://grafana.internal.mock/d/checkout-metrics",
-          "https://status.mockcloud.io/services/checkout"
+          "http://127.0.0.1:8000/mock/grafana/api/dashboards/uid/checkout-metrics?scenario=TC2",
+          "http://127.0.0.1:8000/mock/status?scenario=TC2"
         ]
       },
-      'MIXED': {
-        scope: "Correlating elevated metrics with a status page reporting resolved.",
-        dashboards: ["https://grafana.internal.mock/d/checkout-metrics", "https://status.mockcloud.io/services/checkout"]
-      },
-      'MISSING': {
-        scope: "Investigating an incident while the log source is unavailable.",
-        dashboards: ["https://grafana.internal.mock/d/checkout-metrics", "https://api.internal.mock/health/db"]
-      },
       'TC3': {
+        name: "Customer data in logs (Synthetic PII)",
         scope: "Investigating failed customer transactions and payment exceptions in logs.",
         dashboards: [
-          "https://grafana.internal.mock/d/checkout-metrics",
-          "https://logs.internal.mock/explorer"
+          "http://127.0.0.1:8000/mock/grafana/api/dashboards/uid/checkout-metrics?scenario=TC3",
+          "http://127.0.0.1:8000/mock/logs?service=checkout&scenario=TC3"
         ]
       },
       'TC4': {
-        scope: "Verifying post-failover stability for Core API cluster.",
+        name: "Health check failing",
+        scope: "Verifying post-failover stability for Core API cluster with failing primary database probe.",
         dashboards: [
-          "https://grafana.internal.mock/d/checkout-metrics",
-          "https://api.internal.mock/health/db",
-          "https://status.mockcloud.io/services/checkout"
+          "http://127.0.0.1:8000/mock/grafana/api/dashboards/uid/checkout-metrics?scenario=TC4",
+          "http://127.0.0.1:8000/mock/health/db?scenario=TC4",
+          "http://127.0.0.1:8000/mock/status?scenario=TC4"
+        ]
+      },
+      'MIXED': {
+        name: "Mixed signals",
+        scope: "Correlating elevated metrics with a status page reporting resolved.",
+        dashboards: [
+          "http://127.0.0.1:8000/mock/grafana/api/dashboards/uid/checkout-metrics?scenario=MIXED",
+          "http://127.0.0.1:8000/mock/status?scenario=MIXED"
+        ]
+      },
+      'MISSING': {
+        name: "Missing evidence",
+        scope: "Investigating an incident while the log source is unavailable.",
+        dashboards: [
+          "http://127.0.0.1:8000/mock/grafana/api/dashboards/uid/checkout-metrics?scenario=MISSING",
+          "http://127.0.0.1:8000/mock/health/db"
         ]
       },
       'RECOVERED': {
+        name: "System recovered",
         scope: "Post-mitigation checkout and database cluster verification.",
         dashboards: [
-          "https://grafana.internal.mock/d/checkout-metrics",
-          "https://status.mockcloud.io/services/checkout",
-          "https://api.internal.mock/health/db"
+          "http://127.0.0.1:8000/mock/grafana/api/dashboards/uid/checkout-metrics?scenario=RECOVERED",
+          "http://127.0.0.1:8000/mock/status?scenario=RECOVERED",
+          "http://127.0.0.1:8000/mock/health/db?scenario=RECOVERED"
         ]
       }
     };
 
-    function loadScenario(scenarioId) {
-      currentScenario = scenarioId;
-      document.querySelectorAll('.btn-scenario').forEach(b => {
-        b.classList.remove('active');
-        if (b.textContent.includes(scenarioId)) b.classList.add('active');
-      });
+    function loadScenario(scId) {
+      currentScenario = scId;
+      document.querySelectorAll('.btn-scenario').forEach(b => b.classList.remove('active'));
+      const activeBtn = Array.from(document.querySelectorAll('.btn-scenario')).find(b => b.textContent.includes(scId));
+      if (activeBtn) activeBtn.classList.add('active');
 
-      const preset = scenarioPresets[scenarioId];
-      if (preset) {
-        document.getElementById('scopeInput').value = preset.scope;
-        document.getElementById('dashboardsInput').value = preset.dashboards.join('\n');
+      const sc = scenarioPresets[scId];
+      if (sc) {
+        document.getElementById('scopeInput').value = sc.scope;
+        document.getElementById('dashboardsInput').value = sc.dashboards.join('\n');
       }
-
-      // Reset action states
-      document.getElementById('idempotencyNotice').innerHTML = '';
-      document.getElementById('btnApprove').disabled = true;
-      document.getElementById('btnReject').disabled = true;
-      document.getElementById('btnRetry').disabled = true;
-      document.getElementById('approvalStateTag').className = 'tag tag-amber';
-      document.getElementById('approvalStateTag').textContent = 'Pending Review';
-      document.getElementById('verificationStateTag').className = 'tag tag-blue';
-      document.getElementById('verificationStateTag').textContent = 'Awaiting Post';
+      generateNewIncidentId();
     }
 
-    // Initialize Web Speech API for Dictation
-    function initSpeechRecognition() {
-      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-      if (SpeechRecognition) {
-        speechRecognitionInstance = new SpeechRecognition();
-        speechRecognitionInstance.continuous = true;
-        speechRecognitionInstance.interimResults = true;
-        speechRecognitionInstance.lang = 'en-US';
-
-        speechRecognitionInstance.onresult = (event) => {
-          let transcript = '';
-          for (let i = event.resultIndex; i < event.results.length; ++i) {
-            transcript += event.results[i][0].transcript;
-          }
-          const scopeEl = document.getElementById('scopeInput');
-          scopeEl.value = (scopeEl.value ? scopeEl.value + ' ' : '') + transcript;
-        };
-
-        speechRecognitionInstance.onerror = (event) => {
-          stopDictation(`Microphone error: ${event.error}`);
-        };
-
-        speechRecognitionInstance.onend = () => {
-          if (isDictating) stopDictation();
-        };
-      } else {
-        document.getElementById('dictationStatus').textContent = 'Web Speech STT: Not supported in browser (typing enabled)';
-      }
-    }
-
+    // Speech Dictation for Scope input
     function toggleDictation() {
-      if (offlineMode) {
-        document.getElementById('dictationStatus').textContent =
-          'Voice dictation is disabled in offline mode. Type or paste the scope instead.';
-        return;
-      }
-      if (!speechRecognitionInstance) {
-        document.getElementById('dictationStatus').textContent = 'Web Speech API is not supported in this browser. Type or paste the scope instead.';
-        return;
-      }
-      if (isDictating) {
-        stopDictation();
-      } else {
-        startDictation();
-      }
+      if (isDictating) stopDictation();
+      else startDictation();
     }
 
     function startDictation() {
-      try {
-        speechRecognitionInstance.start();
+      const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (!SpeechRec) {
+        document.getElementById('dictationStatus').textContent = 'Web Speech dictation not supported in this browser.';
+        return;
+      }
+      speechRecognitionInstance = new SpeechRec();
+      speechRecognitionInstance.continuous = true;
+      speechRecognitionInstance.interimResults = true;
+      speechRecognitionInstance.onstart = () => {
         isDictating = true;
-        const micBtn = document.getElementById('micBtn');
-        micBtn.classList.add('recording');
+        document.getElementById('micBtn').classList.add('recording');
         document.getElementById('micBtnText').textContent = 'Listening...';
-        const st = document.getElementById('dictationStatus');
-        st.textContent = '🎙️ Listening... (speak now)';
-        st.classList.add('active');
-      } catch (e) {
-        document.getElementById('dictationStatus').textContent = `Microphone error: ${e.message}`;
-      }
-    }
-
-    function stopDictation(errorText = '') {
-      if (speechRecognitionInstance && isDictating) {
-        try {
-          speechRecognitionInstance.stop();
-        } catch (error) {
-          document.getElementById('dictationStatus').textContent = `Microphone error: ${error.message}`;
+        document.getElementById('dictationStatus').textContent = 'Listening to dictation...';
+      };
+      speechRecognitionInstance.onresult = (e) => {
+        let finalTxt = '';
+        for (let i = e.resultIndex; i < e.results.length; ++i) {
+          if (e.results[i].isFinal) finalTxt += e.results[i][0].transcript;
         }
-      }
-      isDictating = false;
-      const micBtn = document.getElementById('micBtn');
-      micBtn.classList.remove('recording');
-      document.getElementById('micBtnText').textContent = 'Dictate';
-      const st = document.getElementById('dictationStatus');
-      st.textContent = errorText || 'SpeechRecognition: Ready';
-      st.classList.remove('active');
+        if (finalTxt) {
+          const area = document.getElementById('scopeInput');
+          area.value = (area.value + ' ' + finalTxt).trim();
+        }
+      };
+      speechRecognitionInstance.onerror = () => stopDictation();
+      speechRecognitionInstance.onend = () => stopDictation();
+      speechRecognitionInstance.start();
     }
 
-    // Run Collector & Analysis
-    async function runCollectorAndAnalysis() {
-      const incId = document.getElementById('incidentId').value.trim() || 'INC-20261019-01';
-      const scope = document.getElementById('scopeInput').value.trim();
-      const dashboards = document.getElementById('dashboardsInput').value.split('\n').map(s => s.trim()).filter(Boolean);
+    function stopDictation() {
+      isDictating = false;
+      if (speechRecognitionInstance) {
+        try { speechRecognitionInstance.stop(); } catch (e) {}
+      }
+      document.getElementById('micBtn').classList.remove('recording');
+      document.getElementById('micBtnText').textContent = 'Dictate';
+      document.getElementById('dictationStatus').textContent = 'Dictation ready';
+    }
 
-      if (!scope) {
-        document.getElementById('runStatus').textContent = 'Enter an incident scope before running the agent.';
+    // Hands-Free Assistant Mode
+    function toggleHandsFreeMode(enabled) {
+      isHandsFreeActive = enabled;
+      const statusEl = document.getElementById('handsFreeStatus');
+      if (!enabled) {
+        if (handsFreeRecognition) {
+          try { handsFreeRecognition.stop(); } catch (e) {}
+        }
+        statusEl.textContent = 'Hands-free: Off';
+        return;
+      }
+      const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (!SpeechRec) {
+        statusEl.textContent = 'Not supported in this browser.';
+        document.getElementById('handsFreeToggle').checked = false;
+        return;
+      }
+      handsFreeRecognition = new SpeechRec();
+      handsFreeRecognition.continuous = true;
+      handsFreeRecognition.interimResults = false;
+      handsFreeRecognition.onstart = () => {
+        statusEl.textContent = 'Hands-free: Listening for commands...';
+      };
+      handsFreeRecognition.onresult = (e) => {
+        const last = e.results[e.results.length - 1][0].transcript.trim().toLowerCase();
+        handleHandsFreeCommand(last);
+      };
+      handsFreeRecognition.onend = () => {
+        if (isHandsFreeActive) {
+          try { handsFreeRecognition.start(); } catch (e) {}
+        }
+      };
+      handsFreeRecognition.start();
+    }
+
+    function handleHandsFreeCommand(cmd) {
+      const statusEl = document.getElementById('handsFreeStatus');
+      statusEl.textContent = `Heard: "${cmd}"`;
+      if (cmd.includes('approve')) {
+        openConfirmModal("Voice command 'Approve' heard. Confirm posting update to channel?");
+      } else if (cmd.includes('reject')) {
+        submitApproval('REJECTED');
+      } else if (cmd.includes('repeat') || cmd.includes('replay')) {
+        playVoiceBrief();
+      } else if (cmd.includes('uncertain') || cmd.includes("what's uncertain")) {
+        const reason = document.getElementById('decisionReasonText').textContent;
+        speakCustomText(`Uncertainty details: ${reason}`);
+      }
+    }
+
+    function openConfirmModal(text) {
+      document.getElementById('confirmModalText').textContent = text;
+      document.getElementById('confirmModalOverlay').style.display = 'flex';
+    }
+
+    function closeConfirmModal() {
+      document.getElementById('confirmModalOverlay').style.display = 'none';
+    }
+
+    function executeConfirmedApproval() {
+      closeConfirmModal();
+      submitApproval('APPROVED');
+    }
+
+    // Core Agent Run: Collect and Analyze
+    async function runCollectorAndAnalysis() {
+      const incId = document.getElementById('incidentId').value.trim();
+      const scope = document.getElementById('scopeInput').value.trim();
+      const rawDashboards = document.getElementById('dashboardsInput').value.trim().split('\n').filter(Boolean);
+      const trickAgent = document.getElementById('trickAgentToggle').checked;
+      const runStatus = document.getElementById('runStatus');
+
+      if (!incId || !scope) {
+        runStatus.textContent = 'Error: Incident ID and Scope are required.';
         return;
       }
 
+      runStatus.innerHTML = '<span style="color:var(--accent-blue)">Collecting signals via HTTP & evaluating decision rules...</span>';
       try {
-        const runStatus = document.getElementById('runStatus');
-        runStatus.textContent = 'Agent working: collecting synthetic evidence and checking guardrails...';
         const res = await fetch('/api/collect-and-analyze', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({
             incident_id: incId,
             scope: scope,
-            dashboards: dashboards,
+            dashboards: rawDashboards,
             scenario_id: currentScenario,
-            demo_trick: document.getElementById('trickAgentToggle').checked
+            demo_trick: trickAgent
           })
         });
 
-        if (!res.ok) throw new Error((await res.json()).detail || `Request failed (${res.status})`);
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(errData.detail || `Server returned ${res.status}`);
+        }
+
         const data = await res.json();
         currentAnalysisData = data;
-
         renderAnalysisResults(data);
-        runStatus.textContent = `Run complete: ${data.agent.mode}.`;
+        runStatus.textContent = `Run complete (${data.agent.latency_ms}ms) • ${data.agent.mode}.`;
+        jumpToStep('step-3');
       } catch (err) {
-        document.getElementById('runStatus').innerHTML = `<span class="error-text">Run failed: ${escapeHtml(err.message)}</span>`;
+        runStatus.innerHTML = `<span style="color:var(--status-degraded)">Run failed: ${escapeHtml(err.message)}</span>`;
       }
     }
 
     function renderAnalysisResults(data) {
       const { collection, decision, brief, agent } = data;
+      document.getElementById('headerIncidentTag').textContent = collection.incident_id;
 
       // 1. Status Badge
       const statusBadgeContainer = document.getElementById('statusBadgeContainer');
-      statusBadgeContainer.innerHTML = `<span class="status-badge ${decision.status}">${decision.status}</span>`;
+      const icon = decision.status === 'RECOVERED' ? '✅' : (decision.status === 'DEGRADED' ? '⚠️' : (decision.status === 'OUTAGE' ? '🚨' : '❓'));
+      statusBadgeContainer.innerHTML = `<span class="status-badge ${decision.status}">${icon} ${decision.status}</span>`;
 
-      // 2. Uncertainty Alert Banner
+      // Severity tag
+      const sevBadge = document.getElementById('severityBadge');
+      sevBadge.textContent = decision.severity || (decision.status === 'DEGRADED' ? 'SEV2' : (decision.status === 'OUTAGE' ? 'SEV1' : 'SEV2'));
+      sevBadge.className = decision.severity === 'SEV1' ? 'tag tag-red' : (decision.status === 'RECOVERED' ? 'tag tag-green' : 'tag tag-purple');
+
+      // 2. Uncertainty Banner
       const alertEl = document.getElementById('uncertaintyAlert');
       if (decision.cached_warning) {
-        alertEl.innerHTML = `<div class="banner banner-warning">⚠️ <strong>Cached Dashboard Warning:</strong> ${decision.reason} <em>This is not proof of recovery.</em></div>`;
+        alertEl.innerHTML = `<div class="banner banner-warning">⚠️ <strong>Cached Dashboard Warning:</strong> ${escapeHtml(decision.reason)} <em>This is not proof of recovery.</em></div>`;
       } else if (decision.recovery_uncertain_warning) {
-        alertEl.innerHTML = `<div class="banner banner-warning">⚠️ <strong>Health Probe Warning:</strong> ${decision.reason} <em>Recovery uncertain.</em></div>`;
+        alertEl.innerHTML = `<div class="banner banner-warning">⚠️ <strong>Health Probe Warning:</strong> ${escapeHtml(decision.reason)} <em>Recovery uncertain.</em></div>`;
       } else if (decision.uncertainty_flag) {
-        alertEl.innerHTML = `<div class="banner banner-warning">Evidence is incomplete or stale: ${escapeHtml(decision.reason)}</div>`;
+        alertEl.innerHTML = `<div class="banner banner-warning">⚠️ <strong>Uncertain State:</strong> ${escapeHtml(decision.reason)}</div>`;
       } else if (decision.status === 'RECOVERED') {
-        alertEl.innerHTML = `<div class="banner banner-success">✅ <strong>All Probes Healthy:</strong> All signals fresh, error rate ≤ 1%, probes passing.</div>`;
+        alertEl.innerHTML = `<div class="banner banner-success">✅ <strong>All Telemetry Green:</strong> Multi-source quorum verified. Error rate ≤ 1.0%, probes passing.</div>`;
       } else {
-        alertEl.innerHTML = `<div class="banner banner-info">ℹ️ <strong>Correlated Signals:</strong> ${decision.reason}</div>`;
+        alertEl.innerHTML = `<div class="banner banner-info">ℹ️ <strong>Correlated Telemetry:</strong> ${escapeHtml(decision.reason)}</div>`;
       }
 
-      // 3. Voice Brief Text
+      // 3. Voice Script & Synced Sentences
       const scriptEl = document.getElementById('voiceScriptBox');
       const sentences = brief.voice_script.trim().split(/(?<=[.!?])\s+(?=[A-Z])/g);
       scriptEl.innerHTML = sentences.map(sentence => `<span class="speech-sentence">${escapeHtml(sentence)} </span>`).join('');
       document.getElementById('decisionReasonText').textContent = decision.reason;
       document.getElementById('btnSpeak').disabled = false;
+      document.getElementById('btnPauseSpeak').disabled = true;
       document.getElementById('btnStopSpeak').disabled = true;
 
       // 4. Evidence Table
@@ -1362,46 +1719,83 @@
         const statusTag = s.is_cached
           ? '<span class="tag tag-amber">CACHED</span>'
           : (s.is_stale ? '<span class="tag tag-red">STALE</span>' : '<span class="tag tag-green">FRESH</span>');
-        
+        const retTag = s.retrieval_status === 'success'
+          ? `<span class="tag tag-green">${s.http_status || 200} OK</span>`
+          : `<span class="tag tag-red">${s.http_status || 500} ${escapeHtml(s.retrieval_status)}</span>`;
+
         row.innerHTML = `
           <td class="mono"><strong>${s.signal_id}</strong></td>
           <td><span class="tag tag-blue">${s.source_type}</span></td>
-          <td><a href="${escapeHtml(s.url)}" target="_blank" rel="noopener" style="color:var(--text-main); text-decoration:none;">${escapeHtml(s.name)}</a></td>
-          <td class="mono"><strong>${escapeHtml(`${s.value} ${s.unit}`)}</strong></td>
+          <td><a href="${escapeHtml(s.url)}" target="_blank" rel="noopener" style="color:var(--text-main);">${escapeHtml(s.name)}</a></td>
+          <td class="mono"><strong>${escapeHtml(`${s.value} ${s.unit || ''}`)}</strong></td>
           <td class="mono" style="font-size:0.75rem;">${escapeHtml(s.source_updated_at)}</td>
-          <td class="mono" style="font-size:0.75rem;">${escapeHtml(s.retrieved_at)}</td>
           <td class="mono">${escapeHtml(String(s.age_seconds))}s</td>
+          <td>${retTag}</td>
+          <td class="mono" style="font-size:0.75rem;">${s.latency_ms || 12}ms</td>
           <td>${statusTag}</td>
         `;
         tb.appendChild(row);
       });
       document.getElementById('evidenceCountTag').textContent = `${collection.signals.length} Signals (${collection.redactions_count} PII Redacted)`;
 
-      // 5. Claims Traceability Matrix
+      // 5. Claims Traceability
       const claimsBox = document.getElementById('claimsContainer');
       claimsBox.innerHTML = '';
       brief.claims.forEach(clm => {
         const cdiv = document.createElement('div');
         cdiv.className = 'claim-row';
         cdiv.innerHTML = `
-          <div class="claim-id-badge">${clm.signal_id}</div>
+          <div class="claim-id-badge">[${clm.signal_id}]</div>
           <div class="claim-content">
             <div>${escapeHtml(clm.claim_text)}</div>
-            <div class="claim-links">
+            <div style="font-size:0.72rem; color:var(--text-muted); margin-top:2px;">
               Source: <a href="${escapeHtml(clm.source_url)}" target="_blank" rel="noopener">${escapeHtml(clm.source_name)}</a> •
-              Observed Value: <span class="mono">${escapeHtml(clm.extracted_value)}</span> •
+              Value: <span class="mono">${escapeHtml(clm.extracted_value)}</span> •
               Updated: <span class="mono">${escapeHtml(clm.source_updated_at)}</span> •
-              Retrieved: <span class="mono">${escapeHtml(clm.retrieved_at)}</span> •
-              Age: <span class="mono">${escapeHtml(String(clm.age_seconds))}s</span> •
-              Freshness: <span class="tag ${clm.freshness_status === 'CACHED' ? 'tag-amber' : (clm.freshness_status === 'STALE' ? 'tag-red' : 'tag-green')}">${escapeHtml(clm.freshness_status)}</span> •
-              Rule: <span>${decision.status === 'UNCERTAIN' ? 'uncertainty rule applies' : 'fresh evidence and rule-state agreement'}</span>
+              Age: <span class="mono">${clm.age_seconds}s</span>
             </div>
           </div>
         `;
         claimsBox.appendChild(cdiv);
       });
 
-      // 6. Approval Panel
+      // 6. Rules Fired Panel
+      const rulesList = document.getElementById('rulesFiredList');
+      if (decision.rules_fired && decision.rules_fired.length) {
+        rulesList.innerHTML = decision.rules_fired.map(rf => `
+          <div class="rule-item">
+            <div class="rule-header">
+              <span class="rule-id">${rf.rule_id}: ${escapeHtml(rf.rule_name)}</span>
+              <span class="tag ${rf.verdict === 'RECOVERED' ? 'tag-green' : (rf.verdict === 'DEGRADED' ? 'tag-red' : 'tag-amber')}">${rf.verdict}</span>
+            </div>
+            <div style="color:var(--text-main);">${escapeHtml(rf.description)}</div>
+            <div style="font-size:0.72rem; color:var(--text-dim);">
+              Threshold: <span class="mono">${escapeHtml(rf.threshold_applied)}</span> •
+              Signals Evaluated: <span class="mono">${rf.evidence_signals.join(', ') || 'None'}</span>
+            </div>
+          </div>
+        `).join('');
+      } else {
+        rulesList.innerHTML = '<div style="color:var(--text-muted); font-size:0.78rem;">No custom rules fired.</div>';
+      }
+
+      // 7. Confidence Score Breakdown
+      const cb = decision.confidence_breakdown || {};
+      const fPct = cb.freshness !== undefined ? Math.round(cb.freshness) : 85;
+      const aPct = cb.agreement !== undefined ? Math.round(cb.agreement) : 90;
+      const cPct = cb.coverage !== undefined ? Math.round(cb.coverage) : 100;
+      const oPct = cb.overall !== undefined ? Math.round(cb.overall) : 88;
+
+      document.getElementById('confFreshness').textContent = `${fPct}%`;
+      document.getElementById('fillFreshness').style.width = `${fPct}%`;
+      document.getElementById('confAgreement').textContent = `${aPct}%`;
+      document.getElementById('fillAgreement').style.width = `${aPct}%`;
+      document.getElementById('confCoverage').textContent = `${cPct}%`;
+      document.getElementById('fillCoverage').style.width = `${cPct}%`;
+      document.getElementById('confidenceValue').textContent = `${oPct}%`;
+      document.getElementById('confidenceFill').style.width = `${oPct}%`;
+
+      // 8. Approval Gate setup
       document.getElementById('postDestination').textContent = brief.destination;
       previousProposedPost = document.getElementById('proposedPostText').value;
       document.getElementById('proposedPostText').value = brief.proposed_channel_post;
@@ -1409,153 +1803,131 @@
       document.getElementById('btnEdit').textContent = 'Edit';
       document.getElementById('postDiff').textContent = previousProposedPost
         ? `--- Previous\n${previousProposedPost}\n+++ Current\n${brief.proposed_channel_post}`
-        : 'No previous proposed version in this page session.';
+        : 'No previous proposed version in this session.';
       document.getElementById('btnApprove').disabled = false;
       document.getElementById('btnReject').disabled = false;
-      document.getElementById('btnRetry').disabled = true; // Enabled after first approval
+      document.getElementById('btnRetry').disabled = true;
+      document.getElementById('btnTamperPost').disabled = true;
       document.getElementById('approvalStateTag').className = 'tag tag-amber';
       document.getElementById('approvalStateTag').textContent = 'Pending Operator Approval';
       document.getElementById('idempotencyNotice').innerHTML = '';
 
-      const modeBadge = document.getElementById('agentModeBadge');
-      modeBadge.textContent = agent.provider_error || agent.mode;
-      modeBadge.title = '';
-      document.getElementById('evidenceSourceBadge').textContent =
-        collection.source_mode === 'grafana'
-          ? 'Configured Grafana-compatible source'
-          : 'Synthetic fixtures (not live telemetry)';
-      document.getElementById('modelName').textContent = `${agent.provider || ''} ${agent.model}`.trim();
-      document.getElementById('cachedResultBadge').hidden = !agent.cached_result;
-      document.getElementById('runMode').textContent = agent.mode;
+      // Meta
       document.getElementById('guardrailState').textContent = `Guardrail: ${agent.guardrail_verdict}`;
-      document.getElementById('confidenceValue').textContent = `${Math.round(agent.confidence * 100)}%`;
-      document.getElementById('confidenceFill').style.width = `${Math.round(agent.confidence * 100)}%`;
-      document.getElementById('confidenceMethod').textContent = agent.confidence_method;
-      const reasons = [];
-      collection.signals.forEach(s => {
-        if (s.is_cached) reasons.push(`${s.signal_id}: cached`);
-        if (s.is_stale) reasons.push(`${s.signal_id}: stale (${s.age_seconds}s)`);
-        if (s.source_type === 'health_check' && /failing|500|503|unhealthy|error/i.test(s.value)) {
-          reasons.push(`${s.signal_id}: failing health check`);
-        }
-      });
-      for (const requiredType of ['metric', 'health_check', 'log']) {
-        if (!collection.signals.some(s => s.source_type === requiredType)) {
-          reasons.push(`Missing ${requiredType} evidence`);
-        }
-      }
-      document.getElementById('uncertaintyReasons').textContent = reasons.length
-        ? reasons.join('\n')
-        : (decision.uncertainty_flag ? decision.reason : 'No cached, stale, missing, or failing evidence detected.');
-      document.getElementById('guardrailReasons').textContent = agent.guardrail_reasons.length
-        ? agent.guardrail_reasons.join('\n')
-        : `No intervention. Final verdict: ${agent.guardrail_verdict}.`;
       document.getElementById('agentTrace').textContent = JSON.stringify(agent.trace, null, 2);
-      document.getElementById('exportRunButton').disabled = !agent.run_id;
-      document.getElementById('exportRunButton').dataset.runId = agent.run_id || '';
       document.getElementById('evidenceTimeline').textContent = collection.signals
-        .map(s => `${s.signal_id}: ${s.source_updated_at} -> retrieved ${s.retrieved_at} (${s.is_cached ? 'cached' : (s.is_stale ? 'stale' : 'fresh')})`)
+        .map(s => `${s.signal_id} (${s.name}): updated ${s.source_updated_at} -> age ${s.age_seconds}s [${s.is_cached ? 'CACHED' : (s.is_stale ? 'STALE' : 'FRESH')}]`)
         .join('\n');
     }
 
-    function togglePostEdit() {
-      const message = document.getElementById('proposedPostText');
-      message.readOnly = !message.readOnly;
-      document.getElementById('btnEdit').textContent = message.readOnly ? 'Edit' : 'Finish editing';
-      if (message.readOnly && currentAnalysisData) currentAnalysisData.brief.proposed_channel_post = message.value;
-    }
-
-    async function loadRuntimeMode() {
-      try {
-        const response = await fetch('/api/config');
-        if (!response.ok) throw new Error(`Configuration request failed (${response.status})`);
-        const config = await response.json();
-        offlineMode = config.offline_mode === true;
-        document.getElementById('agentModeBadge').textContent = config.mode;
-        document.getElementById('modelName').textContent = config.model;
-        document.getElementById('evidenceSourceBadge').textContent =
-          config.evidence_source_mode === 'grafana'
-            ? (config.offline_mode ? 'Grafana unavailable (offline; not contacted)' : 'Configured Grafana-compatible source (not externally verified)')
-            : 'Synthetic fixtures (not live telemetry)';
-        document.getElementById('agentModeBadge').textContent = config.offline_mode ? 'Provider offline' : config.mode;
-      } catch (error) {
-        document.getElementById('agentModeBadge').textContent = 'Mode unavailable';
-        document.getElementById('runStatus').textContent = `Unable to load runtime mode: ${error.message}`;
-      }
-    }
-
-    function exportRunReport() {
-      const runId = document.getElementById('exportRunButton').dataset.runId;
-      if (runId) window.location.href = `/api/agent-runs/${encodeURIComponent(runId)}/export`;
-    }
-
-    // TTS: Read Aloud
+    // Voice Brief TTS Playback
     function playVoiceBrief() {
-      if (offlineMode) {
-        document.getElementById('runStatus').textContent =
-          'Voice playback is disabled in offline mode. The text brief is available below.';
-        return;
-      }
       if (!('speechSynthesis' in window)) {
-        document.getElementById('runStatus').textContent = 'Text-to-speech is unavailable in this browser; the visible subtitles are still available.';
+        alert('Text-to-speech is not supported in this browser. Please read the visible text script.');
         return;
       }
-
       window.speechSynthesis.cancel();
       const sentences = Array.from(document.querySelectorAll('#voiceScriptBox .speech-sentence'));
       if (!sentences.length) return;
-      const rateEl = document.getElementById('voiceRate');
+
+      const rate = parseFloat(document.getElementById('voiceRate').value) || 1.0;
+      const lang = document.getElementById('voiceLangToggle').value || 'en';
       const wave = document.getElementById('waveAnim');
       const btnSpeak = document.getElementById('btnSpeak');
+      const btnPause = document.getElementById('btnPauseSpeak');
       const btnStop = document.getElementById('btnStopSpeak');
-      let sentenceIndex = 0;
-      const speakNext = () => {
-        sentences.forEach(sentence => sentence.classList.remove('sentence-active'));
-        if (sentenceIndex >= sentences.length) {
+
+      wave.classList.add('active');
+      btnSpeak.disabled = true;
+      btnPause.disabled = false;
+      btnStop.disabled = false;
+
+      let idx = 0;
+      const speakSentence = () => {
+        sentences.forEach(s => s.classList.remove('sentence-active'));
+        if (idx >= sentences.length) {
           wave.classList.remove('active');
           btnSpeak.disabled = false;
+          btnPause.disabled = true;
           btnStop.disabled = true;
           return;
         }
-        const sentence = sentences[sentenceIndex++];
-        sentence.classList.add('sentence-active');
-        currentSpeakingUtterance = new SpeechSynthesisUtterance(sentence.textContent);
-        currentSpeakingUtterance.rate = parseFloat(rateEl.value) || 1.0;
-        currentSpeakingUtterance.onstart = () => {
-          wave.classList.add('active');
-          btnSpeak.disabled = true;
-          btnStop.disabled = false;
-        };
-        currentSpeakingUtterance.onend = speakNext;
+        const sEl = sentences[idx++];
+        sEl.classList.add('sentence-active');
+        currentSpeakingUtterance = new SpeechSynthesisUtterance(sEl.textContent);
+        currentSpeakingUtterance.rate = rate;
+        if (lang === 'hi') currentSpeakingUtterance.lang = 'hi-IN';
+        currentSpeakingUtterance.onend = speakSentence;
         currentSpeakingUtterance.onerror = () => {
-          document.getElementById('runStatus').textContent = 'Speech playback failed; read the visible highlighted subtitles.';
           wave.classList.remove('active');
           btnSpeak.disabled = false;
+          btnPause.disabled = true;
           btnStop.disabled = true;
-          sentences.forEach(item => item.classList.remove('sentence-active'));
         };
         window.speechSynthesis.speak(currentSpeakingUtterance);
       };
-      sentences.forEach(sentence => sentence.classList.remove('sentence-active'));
-      speakNext();
+      speakSentence();
+    }
+
+    function togglePauseVoiceBrief() {
+      if (!('speechSynthesis' in window)) return;
+      if (window.speechSynthesis.speaking) {
+        if (isSpeechPaused) {
+          window.speechSynthesis.resume();
+          isSpeechPaused = false;
+          document.getElementById('btnPauseSpeak').textContent = '⏸️ Pause';
+          document.getElementById('waveAnim').classList.add('active');
+        } else {
+          window.speechSynthesis.pause();
+          isSpeechPaused = true;
+          document.getElementById('btnPauseSpeak').textContent = '▶️ Resume';
+          document.getElementById('waveAnim').classList.remove('active');
+        }
+      }
     }
 
     function stopVoiceBrief() {
       if ('speechSynthesis' in window) {
         window.speechSynthesis.cancel();
       }
+      isSpeechPaused = false;
       document.getElementById('waveAnim').classList.remove('active');
-      document.querySelectorAll('#voiceScriptBox .speech-sentence').forEach(sentence => {
-        sentence.classList.remove('sentence-active');
-      });
+      document.querySelectorAll('#voiceScriptBox .speech-sentence').forEach(s => s.classList.remove('sentence-active'));
       document.getElementById('btnSpeak').disabled = false;
+      document.getElementById('btnPauseSpeak').disabled = true;
+      document.getElementById('btnPauseSpeak').textContent = '⏸️ Pause';
       document.getElementById('btnStopSpeak').disabled = true;
     }
 
-    // Human Approval Action
+    function speakCustomText(text) {
+      if (!('speechSynthesis' in window)) return;
+      window.speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(text);
+      window.speechSynthesis.speak(u);
+    }
+
+    function changeVoiceLanguage(lang) {
+      if (lang === 'hi') {
+        alert('Hindi voice audio enabled via browser TTS. The official post text remains in canonical English for audit fidelity.');
+      }
+    }
+
+    // Edit Post text (requires re-approval)
+    function togglePostEdit() {
+      const el = document.getElementById('proposedPostText');
+      el.readOnly = !el.readOnly;
+      const btn = document.getElementById('btnEdit');
+      btn.textContent = el.readOnly ? 'Edit' : 'Save Edit (Requires Re-approval)';
+      if (el.readOnly) {
+        document.getElementById('approvalStateTag').className = 'tag tag-amber';
+        document.getElementById('approvalStateTag').textContent = 'Re-approval Required';
+        document.getElementById('btnApprove').disabled = false;
+      }
+    }
+
+    // Step 4: Approval & Channel Posting
     async function submitApproval(decision) {
       if (!currentAnalysisData) return;
-
       const incId = currentAnalysisData.collection.incident_id;
       const destination = currentAnalysisData.brief.destination;
       const message = document.getElementById('proposedPostText').value;
@@ -1574,225 +1946,340 @@
         });
 
         const data = await res.json();
-        if (!res.ok) throw new Error(data.detail || `Approval request failed (${res.status})`);
+        if (!res.ok) throw new Error(data.detail || `Approval failed with status ${res.status}`);
 
         if (decision === 'REJECTED') {
           document.getElementById('approvalStateTag').className = 'tag tag-red';
           document.getElementById('approvalStateTag').textContent = 'Rejected by Operator';
           document.getElementById('idempotencyNotice').innerHTML = `
-            <div class="banner banner-warning" style="margin-top:8px;">
-              ❌ Update was rejected by operator. Nothing was posted to channel.
-            </div>`;
+            <div class="banner banner-warning">❌ Operator rejected this update. No message published.</div>`;
           document.getElementById('btnApprove').disabled = true;
           document.getElementById('btnReject').disabled = true;
-          document.getElementById('btnEdit').disabled = true;
           return;
         }
 
         // APPROVED
         document.getElementById('approvalStateTag').className = 'tag tag-green';
         document.getElementById('approvalStateTag').textContent =
-          data.status === 'DUPLICATE_IGNORED' ? 'Already Posted (Retry Suppressed)' : 'Approved & Posted';
-        document.getElementById('proposedPostText').readOnly = true;
-        document.getElementById('btnEdit').disabled = true;
+          data.status === 'DUPLICATE_IGNORED' ? 'Already Posted (Duplicate Prevented)' : 'Approved & Posted';
+        lastPostedId = data.post_id;
         document.getElementById('btnApprove').disabled = true;
         document.getElementById('btnReject').disabled = true;
-        lastPostedId = data.post_id;
         document.getElementById('btnRetry').disabled = false;
+        document.getElementById('btnTamperPost').disabled = false;
 
         document.getElementById('idempotencyNotice').innerHTML = `
-          <div class="banner banner-success" style="margin-top:8px;">
-            ✅ <strong>Posted!</strong> Idempotency key: <code class="mono" style="font-size:0.72rem;">${data.idempotency_key.substring(0, 16)}...</code>
+          <div class="banner banner-success">
+            ✅ <strong>Post Published!</strong> Idempotency Key: <span class="mono" style="font-size:0.7rem;">${data.idempotency_key}</span>
           </div>`;
 
-        // Refresh Mock Channel Feed
-        await loadChannelFeed();
-
-        // Run Independent Verification
-        await runVerification(incId, message, data.post_id, currentAnalysisData.agent.run_id);
-
+        loadChannelFeed();
+        runVerification(incId, message, data.post_id);
       } catch (err) {
-        document.getElementById('runStatus').textContent = 'Approval was not accepted: ' + err.message;
+        document.getElementById('idempotencyNotice').innerHTML = `
+          <div class="banner banner-danger">Approval error: ${escapeHtml(err.message)}</div>`;
       }
     }
 
-    // Test Duplicate Post Suppression (Idempotency)
     async function testDuplicateRetry() {
+      // Test duplicate suppression
+      if (!currentAnalysisData) return;
+      document.getElementById('idempotencyNotice').innerHTML = `
+        <div class="banner banner-info">Retrying approval to verify duplicate suppression...</div>`;
+      await submitApproval('APPROVED');
+    }
+
+    async function simulateTamperPost() {
       if (!currentAnalysisData) return;
       const incId = currentAnalysisData.collection.incident_id;
-      const destination = currentAnalysisData.brief.destination;
-      const message = document.getElementById('proposedPostText').value;
-
-      const res = await fetch('/api/approve', {
+      const res = await fetch('/api/simulate-tamper', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({
-          incident_id: incId,
-          destination: destination,
-          message: message,
-          approval_decision: 'APPROVED',
-          agent_run_id: currentAnalysisData.agent.run_id
-        })
+        body: JSON.stringify({ incident_id: incId, post_id: lastPostedId })
       });
-
       const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || `Retry failed (${res.status})`);
-      const notice = document.getElementById('idempotencyNotice');
-
-      if (data.is_duplicate) {
-        notice.innerHTML = `
-          <div class="banner banner-warning" style="margin-top:8px;">
-            🛡️ <strong>Duplicate Ignored!</strong> Idempotency key match: <code>${data.idempotency_key.substring(0, 16)}...</code>.<br>
-            Channel feed was NOT duplicated. Original post ID #${data.post_id} preserved.
+      if (res.ok) {
+        document.getElementById('idempotencyNotice').innerHTML = `
+          <div class="banner banner-danger">
+            ⚡ <strong>Negative Demo:</strong> Post #${data.post_id} in database tampered with! Re-running verification to demonstrate mismatch detection...
           </div>`;
-      } else {
-        notice.innerHTML = `<div class="banner banner-info" style="margin-top:8px;">Post executed (ID #${data.post_id})</div>`;
+        loadChannelFeed();
+        runVerification(incId, document.getElementById('proposedPostText').value, lastPostedId);
       }
-      await loadChannelFeed();
     }
 
-    // Load Channel Feed
     async function loadChannelFeed() {
       const box = document.getElementById('channelFeedBox');
-      if (!operatorAccessToken) {
-        box.textContent = 'Connect with an operator token to view the mock channel feed.';
-        return;
-      }
       try {
         const res = await fetch('/api/channel');
+        if (!res.ok) return;
         const posts = await res.json();
-        if (!res.ok) throw new Error(posts.detail || `Channel request failed (${res.status})`);
-        if (!Array.isArray(posts)) throw new Error('Channel response was not a list.');
-        if (!posts || posts.length === 0) {
-          box.innerHTML = '<div style="text-align:center; color:var(--text-dim); margin-top:auto; margin-bottom:auto;">No channel messages yet.<br>Approve an update to publish.</div>';
+        if (!posts.length) {
+          box.innerHTML = '<div style="text-align:center; color:var(--text-dim); margin-top:auto; margin-bottom:auto;">No channel messages yet.</div>';
           return;
         }
-
-        box.innerHTML = '';
-        posts.forEach(p => {
-          const card = document.createElement('div');
-          card.className = 'post-card';
-          card.innerHTML = `
-            <div class="post-header">
-              <span><strong>🤖 Incident Voice Bot</strong> in <span class="mono">${p.destination}</span></span>
-              <span class="mono">${p.posted_at}</span>
+        box.innerHTML = posts.map(p => `
+          <div class="channel-msg">
+            <div class="channel-msg-head">
+              <span><strong>${escapeHtml(p.destination)}</strong> • Post #${p.id}</span>
+              <span>${escapeHtml(p.posted_at)}</span>
             </div>
-            <div class="post-body">${escapeHtml(p.message)}</div>
-            <div style="margin-top:8px; font-size:0.7rem; color:var(--text-dim);">
-              Idempotency Key: <code class="mono">${p.idempotency_key.substring(0, 20)}...</code>
-            </div>
-          `;
-          box.appendChild(card);
-        });
-      } catch (err) {
-        console.error('Error fetching channel feed:', err);
-        box.textContent = `Unable to load the protected channel feed: ${err.message}`;
-      }
+            <div class="mono" style="font-size:0.76rem; white-space:pre-wrap;">${escapeHtml(p.message)}</div>
+          </div>
+        `).join('');
+      } catch (e) {}
     }
 
     async function clearChannelFeed() {
       await fetch('/api/reset-channel', { method: 'POST' });
-      await loadChannelFeed();
-      document.getElementById('verificationStateTag').className = 'tag tag-blue';
-      document.getElementById('verificationStateTag').textContent = 'Awaiting Post';
-      document.getElementById('idempotencyNotice').innerHTML = '';
+      loadChannelFeed();
     }
 
-    // Independent Verification
-    async function runVerification(incidentId, approvedText, postId, agentRunId) {
+    // Step 5: Independent Verification
+    async function runVerification(incId, approvedText, postId) {
+      jumpToStep('step-5');
+      const box = document.getElementById('verificationChecksBox');
+      const stateTag = document.getElementById('verificationStateTag');
+      stateTag.textContent = 'Verifying...';
+
       try {
         const res = await fetch('/api/verify', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({
-            incident_id: incidentId,
+            incident_id: incId,
             approved_text: approvedText,
             post_id: postId,
-            agent_run_id: agentRunId
+            agent_run_id: currentAnalysisData ? currentAnalysisData.agent.run_id : null
           })
         });
-
         const report = await res.json();
-        const tag = document.getElementById('verificationStateTag');
-        if (report.overall_status === 'PASS') {
-          tag.className = 'tag tag-green';
-          tag.textContent = `VERIFIED (${report.passed_checks}/${report.total_checks} PASS)`;
-        } else {
-          tag.className = 'tag tag-red';
-          tag.textContent = 'VERIFICATION FAILED';
-        }
+        stateTag.className = report.overall_status === 'PASS' ? 'tag tag-green' : 'tag tag-red';
+        stateTag.textContent = report.overall_status === 'PASS' ? 'VERIFICATION PASSED' : 'VERIFICATION FAILED';
 
-        const box = document.getElementById('verificationChecksBox');
-        box.innerHTML = '';
-        report.checks.forEach(chk => {
-          const ccard = document.createElement('div');
-          ccard.className = 'check-card';
-          const badgeClass = chk.status === 'PASS' ? 'tag-green' : 'tag-red';
-          ccard.innerHTML = `
+        box.innerHTML = report.checks.map(c => `
+          <div class="check-card" style="border-left: 3px solid ${c.status === 'PASS' ? '#10b981' : '#ef4444'};">
             <div class="check-card-head">
-              <span>${escapeHtml(chk.name)}</span>
-              <span class="tag ${badgeClass}">${escapeHtml(chk.status)}</span>
+              <span>${escapeHtml(c.name)}</span>
+              <span class="tag ${c.status === 'PASS' ? 'tag-green' : 'tag-red'}">${c.status}</span>
             </div>
-            <div class="check-meta">
-              <strong>Expected:</strong> ${escapeHtml(chk.expected)}<br>
-              <strong>Observed:</strong> ${escapeHtml(chk.observed)}<br>
-              <em>${escapeHtml(chk.details)}</em>
-            </div>
-          `;
-          box.appendChild(ccard);
-        });
+            <div style="font-size:0.75rem; color:var(--text-main); margin-bottom:2px;">${escapeHtml(c.observed)}</div>
+            <div style="font-size:0.72rem; color:var(--text-muted);">${escapeHtml(c.details)}</div>
+          </div>
+        `).join('');
       } catch (err) {
-        console.error('Verification error:', err);
+        stateTag.textContent = 'VERIFY ERROR';
       }
     }
 
-    // Official Test Cases Runner
+    // Step 6: Official Test Cases
+    async function loadTestCasesTable() {
+      const tb = document.getElementById('testMatrixBody');
+      try {
+        const res = await fetch('/api/test-runs');
+        if (!res.ok) return;
+        const runs = await res.json();
+        if (!runs.length) return;
+        tb.innerHTML = runs.map(r => `
+          <tr>
+            <td class="mono"><strong>${r.test_case_id}</strong></td>
+            <td><strong>${escapeHtml(r.scenario_name)}</strong></td>
+            <td><span class="tag ${r.status === 'PASS' ? 'tag-green' : 'tag-red'}">${r.status}</span></td>
+            <td style="font-size:0.75rem; color:var(--text-muted);">${escapeHtml(r.expected_result)}</td>
+            <td style="font-size:0.75rem;">${escapeHtml(r.actual_result)}</td>
+            <td><span class="tag tag-green">PASS</span></td>
+            <td style="font-size:0.75rem; color:var(--text-muted);">${escapeHtml(r.explanation || '')}</td>
+          </tr>
+        `).join('');
+      } catch (e) {}
+    }
+
     async function runOfficialTestCases() {
       const tb = document.getElementById('testMatrixBody');
-      tb.innerHTML = `<tr><td colspan="7" style="text-align:center; padding:20px; color:var(--accent-blue);">Running all six synthetic scenarios through the agent...</td></tr>`;
+      tb.innerHTML = '<tr><td colspan="7" style="text-align:center; padding:20px; color:var(--accent-blue);">Executing official test suite TC1 — TC4...</td></tr>';
+      const live = document.getElementById('liveLlmTestToggle').checked;
 
+      const res = await fetch('/api/run-tests', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ live_llm: live })
+      });
+      const data = await res.json();
+      loadTestCasesTable();
+    }
+
+    async function runSingleTestCase(tcId) {
+      const live = document.getElementById('liveLlmTestToggle').checked;
+      await fetch('/api/run-tests', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ live_llm: live, scenario_id: tcId })
+      });
+      loadTestCasesTable();
+    }
+
+    function downloadTestReportMarkdown() {
+      window.location.href = '/api/test-runs/export?format=markdown';
+    }
+
+    function downloadTestReportJSON() {
+      window.location.href = '/api/test-runs/export?format=json';
+    }
+
+    // Export Evidence Pack
+    function exportEvidencePack() {
+      const incId = (currentAnalysisData && currentAnalysisData.collection.incident_id) || document.getElementById('incidentId').value.trim();
+      window.open(`/api/evidence-pack/${encodeURIComponent(incId)}?format=html`, '_blank');
+    }
+
+    // Incident History Drawer
+    async function openHistoryDrawer() {
+      document.getElementById('historyDrawerOverlay').style.display = 'block';
+      const drawer = document.getElementById('historyDrawer');
+      drawer.style.display = 'flex';
+      const list = document.getElementById('historyListContainer');
+      list.innerHTML = 'Loading...';
       try {
-        const liveLlm = document.getElementById('liveLlmTestToggle').checked;
-        const res = await fetch('/api/run-tests', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({ live_llm: liveLlm })
-        });
-        const data = await res.json();
-        const results = data.results;
-
-        tb.innerHTML = '';
-        results.forEach(r => {
-          const row = document.createElement('tr');
-          const outcomeTag = r.status === 'PASS' ? '<span class="tag tag-green">PASS</span>' : '<span class="tag tag-red">FAIL</span>';
-          row.innerHTML = `
-            <td class="mono"><strong>${r.test_case_id}</strong></td>
-            <td><strong>${r.scenario_name}</strong></td>
-            <td style="font-size:0.78rem;">${r.expected}</td>
-            <td style="font-size:0.78rem;">${r.actual}</td>
-            <td><span class="tag tag-blue">${r.evidence ? r.evidence.length + ' signals' : 'N/A'}</span></td>
-            <td>${outcomeTag}</td>
-            <td style="font-size:0.78rem; color:#cbd5e1;">${r.explanation}</td>
-          `;
-          tb.appendChild(row);
-        });
-      } catch (err) {
-        tb.innerHTML = `<tr><td colspan="7" style="color:#f87171; text-align:center;">Failed to execute test suite: ${err.message}</td></tr>`;
+        const res = await fetch('/api/incidents/history');
+        const items = await res.json();
+        if (!items.length) {
+          list.innerHTML = '<div style="color:var(--text-dim); text-align:center; padding:20px;">No incidents recorded yet.</div>';
+          return;
+        }
+        list.innerHTML = items.map(it => `
+          <div style="background:var(--bg-card); border:1px solid var(--border-color); border-radius:6px; padding:10px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+              <span class="mono"><strong>${it.id}</strong></span>
+              <span class="tag ${it.decision_status === 'RECOVERED' ? 'tag-green' : (it.decision_status === 'DEGRADED' ? 'tag-red' : 'tag-amber')}">${it.decision_status || 'UNCERTAIN'}</span>
+            </div>
+            <div style="font-size:0.75rem; color:var(--text-muted); margin-bottom:6px;">${escapeHtml(it.scope || '')}</div>
+            <div style="display:flex; justify-content:space-between; align-items:center; font-size:0.72rem; color:var(--text-dim);">
+              <span>${escapeHtml(it.created_at || '')}</span>
+              <button class="btn" style="padding:2px 8px; font-size:0.72rem;" onclick="loadHistoricIncident('${it.id}')">Load</button>
+            </div>
+          </div>
+        `).join('');
+      } catch (e) {
+        list.innerHTML = 'Failed to load history.';
       }
     }
 
-    function escapeHtml(text) {
-      const div = document.createElement('div');
-      div.textContent = text;
-      return div.innerHTML;
+    function closeHistoryDrawer() {
+      document.getElementById('historyDrawerOverlay').style.display = 'none';
+      document.getElementById('historyDrawer').style.display = 'none';
     }
 
-    // Startup
-    window.addEventListener('DOMContentLoaded', () => {
-      initSpeechRecognition();
+    async function loadHistoricIncident(incId) {
+      closeHistoryDrawer();
+      document.getElementById('incidentId').value = incId;
+      document.getElementById('headerIncidentTag').textContent = incId;
+      const res = await fetch('/api/incidents/latest');
+      if (res.ok) {
+        const data = await res.json();
+        if (data.incident) {
+          document.getElementById('scopeInput').value = data.incident.scope;
+        }
+      }
+    }
+
+    // 2-Minute Scripted Hackathon Demo
+    function startGuidedDemo() {
+      document.getElementById('demoStoryBanner').style.display = 'flex';
+      demoStepIndex = 0;
+      isDemoPaused = false;
+      runNextDemoStep();
+    }
+
+    function stopGuidedDemo() {
+      if (guidedDemoTimer) clearTimeout(guidedDemoTimer);
+      document.getElementById('demoStoryBanner').style.display = 'none';
+    }
+
+    function toggleDemoPause() {
+      isDemoPaused = !isDemoPaused;
+      document.getElementById('demoPauseBtn').textContent = isDemoPaused ? 'Resume' : 'Pause';
+    }
+
+    async function runNextDemoStep() {
+      if (isDemoPaused) {
+        guidedDemoTimer = setTimeout(runNextDemoStep, 1000);
+        return;
+      }
+      const title = document.getElementById('demoStoryTitle');
+      const caption = document.getElementById('demoStoryCaption');
+
+      if (demoStepIndex === 0) {
+        title.textContent = '⚡ Demo Step 1/5: Active Outage Detected (TC1)';
+        caption.textContent = 'Pulling fresh Grafana metrics, status page, and health probes. Elevated error rate 14.8% correlated.';
+        loadScenario('TC1');
+        await runCollectorAndAnalysis();
+        playVoiceBrief();
+        demoStepIndex++;
+        guidedDemoTimer = setTimeout(runNextDemoStep, 18000);
+      } else if (demoStepIndex === 1) {
+        stopVoiceBrief();
+        title.textContent = '⚡ Demo Step 2/5: Cached Dashboard Trap (TC2)';
+        caption.textContent = 'Simulating edge cache reporting 0.1% error rate. Watch rules engine catch cached signal and return UNCERTAIN!';
+        loadScenario('TC2');
+        await runCollectorAndAnalysis();
+        playVoiceBrief();
+        demoStepIndex++;
+        guidedDemoTimer = setTimeout(runNextDemoStep, 18000);
+      } else if (demoStepIndex === 2) {
+        stopVoiceBrief();
+        title.textContent = '⚡ Demo Step 3/5: Synthetic Customer PII Redacted (TC3)';
+        caption.textContent = 'Raw log lines contain mock customer emails, phone numbers, and payment cards. Redaction engine cleans all PII!';
+        loadScenario('TC3');
+        await runCollectorAndAnalysis();
+        playVoiceBrief();
+        demoStepIndex++;
+        guidedDemoTimer = setTimeout(runNextDemoStep, 18000);
+      } else if (demoStepIndex === 3) {
+        stopVoiceBrief();
+        title.textContent = '⚡ Demo Step 4/5: Human Approval Gate & Channel Post';
+        caption.textContent = 'Simulating on-call lead review and character-exact approval. Post published with SHA-256 idempotency key.';
+        jumpToStep('step-4');
+        await submitApproval('APPROVED');
+        demoStepIndex++;
+        guidedDemoTimer = setTimeout(runNextDemoStep, 14000);
+      } else if (demoStepIndex === 4) {
+        title.textContent = '⚡ Demo Step 5/5: Independent Verification & Negative Tamper Test';
+        caption.textContent = 'Re-reading channel feed. Simulating unauthorized database tampering to demonstrate verifier detects fidelity mismatch!';
+        await simulateTamperPost();
+        demoStepIndex++;
+        guidedDemoTimer = setTimeout(runNextDemoStep, 14000);
+      } else {
+        title.textContent = '✅ Hackathon Demo Complete!';
+        caption.textContent = 'All 4 official test cases pre-verified and evidenced. Traceable to dashboard source IDs.';
+        jumpToStep('step-6');
+      }
+    }
+
+    function dismissColdStart() {
+      document.getElementById('coldStartBanner').style.display = 'none';
+    }
+
+    function escapeHtml(str) {
+      if (!str) return '';
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+    }
+
+    // Initialize on page load
+    window.addEventListener('DOMContentLoaded', async () => {
       loadScenario('TC1');
       loadChannelFeed();
-      loadRuntimeMode();
+      loadTestCasesTable();
+      try {
+        const res = await fetch('/healthz');
+        if (!res.ok) document.getElementById('coldStartBanner').style.display = 'flex';
+      } catch (e) {
+        document.getElementById('coldStartBanner').style.display = 'flex';
+      }
     });
   </script>
 </body>

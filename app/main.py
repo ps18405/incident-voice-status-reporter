@@ -20,9 +20,9 @@ try:
     load_dotenv()
 except ImportError:
     pass
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -43,11 +43,15 @@ from app.db import (
     get_agent_run,
     get_approval_by_agent_run,
     get_latest_test_runs,
+    get_latest_incident,
+    list_recent_incidents,
+    save_proposed_update,
     init_db,
     record_agent_run,
     record_test_run,
     update_agent_run_report,
 )
+from app.mock_observability import mock_router
 from app.redact import redact_text, scan_for_unredacted_pii
 from app.rules import evaluate_decision_rules
 from app.sources import get_mock_scenario_sources, list_available_scenarios
@@ -59,6 +63,8 @@ app = FastAPI(
     description="Operational on-call voice briefing agent with honesty about uncertainty, PII redaction, human approval gate, and verified claims.",
     version="1.0.0",
 )
+
+app.include_router(mock_router)
 
 allowed_origins = [
     origin.strip()
@@ -119,6 +125,12 @@ async def favicon():
 async def health_check():
     """Health check endpoint for cloud platforms and orchestrators."""
     return {"status": "ok"}
+
+
+@app.get("/healthz")
+async def healthz_check():
+    """Lightweight health check for Render cold-start and container orchestrators."""
+    return {"status": "ok", "service": "Incident Voice Status Reporter"}
 
 
 
@@ -229,6 +241,17 @@ async def collect_and_analyze(
         report["evidence"] = [signal.model_dump() for signal in collection.signals]
         report["decision"] = decision.model_dump()
         run_id = record_agent_run(inp.incident_id, report)
+        try:
+            save_proposed_update(
+                incident_id=inp.incident_id,
+                agent_run_id=run_id,
+                destination=brief.destination,
+                proposed_channel_post=brief.proposed_channel_post,
+                voice_script=brief.voice_script,
+                claims=[c.model_dump() for c in brief.claims],
+            )
+        except Exception:
+            pass
 
         result = {
             "success": True,
@@ -285,6 +308,66 @@ async def get_public_config():
         "evidence_source_mode": os.getenv("EVIDENCE_SOURCE", "fixtures").strip().lower(),
         "offline_mode": offline_mode,
         "live_llm_enabled": live_llm_enabled,
+    }
+
+
+@app.get("/api/incidents/latest")
+async def get_latest_incident_endpoint(
+    identity: Dict[str, str] = Depends(require_operator),
+):
+    """Retrieve the most recently recorded incident and its state."""
+    data = get_latest_incident()
+    if data is None:
+        raise HTTPException(status_code=404, detail="No incident found in storage.")
+    return data
+
+
+@app.get("/api/incidents/history")
+async def get_incident_history_endpoint(
+    limit: int = 20,
+    identity: Dict[str, str] = Depends(require_operator),
+):
+    """Retrieve recent incidents list for the history drawer."""
+    return list_recent_incidents(limit=min(limit, 100))
+
+
+class TamperPostRequest(BaseModel):
+    incident_id: str
+    post_id: Optional[int] = None
+    tampered_message: Optional[str] = None
+
+
+@app.post("/api/simulate-tamper")
+async def simulate_tampered_post(
+    req: TamperPostRequest,
+    identity: Dict[str, str] = Depends(require_operator),
+):
+    """Tamper with a published post to demonstrate independent verification catching fidelity failure."""
+    from app.db import get_connection
+    conn = get_connection()
+    cursor = conn.cursor()
+    if req.post_id:
+        cursor.execute("SELECT * FROM posts WHERE id = ?", (req.post_id,))
+    else:
+        cursor.execute("SELECT * FROM posts WHERE incident_id = ? ORDER BY id DESC LIMIT 1", (req.incident_id,))
+    row = cursor.fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="No post found to tamper with.")
+    
+    post = dict(row)
+    orig_msg = post["message"]
+    tampered = req.tampered_message or (orig_msg + " [TAMPERED: Unauthorized update payload injected!]")
+    with conn:
+        conn.execute("UPDATE posts SET message = ? WHERE id = ?", (tampered, post["id"]))
+        conn.execute("UPDATE posted_messages SET message = ? WHERE id = ?", (tampered, post["id"]))
+    conn.close()
+    return {
+        "success": True,
+        "post_id": post["id"],
+        "original_message": orig_msg,
+        "tampered_message": tampered,
+        "notice": "Post content altered in database. Run Step 5 verification to observe fidelity failure.",
     }
 
 
@@ -476,6 +559,7 @@ async def reset_channel(identity: Dict[str, str] = Depends(require_admin)):
 
 class RunTestsRequest(BaseModel):
     live_llm: bool = False
+    scenario_id: Optional[str] = None
 
 
 @app.post("/api/run-tests")
@@ -492,8 +576,12 @@ async def run_official_tests(
         "MIXED": ("DEGRADED", "fresh elevated metrics override resolved status-page text"),
         "MISSING": ("UNCERTAIN", "unavailable log source is disclosed"),
     }
+    target_scenarios = assertions
+    if req and req.scenario_id and req.scenario_id.upper() in assertions:
+        target_scenarios = {req.scenario_id.upper(): assertions[req.scenario_id.upper()]}
+
     results = []
-    for scenario_id, (expected_state, expected_behavior) in assertions.items():
+    for scenario_id, (expected_state, expected_behavior) in target_scenarios.items():
         source = get_mock_scenario_sources(scenario_id)
         incident_id = f"INC-{scenario_id}-TEST-{uuid.uuid4().hex[:8].upper()}"
         incident_input = IncidentInput(
@@ -655,6 +743,142 @@ async def run_official_tests(
 async def get_test_runs(identity: Dict[str, str] = Depends(require_operator)):
     """Retrieve historical/latest test runs."""
     return get_latest_test_runs()
+
+
+@app.get("/api/test-runs/export")
+async def export_test_runs(
+    format: str = Query("markdown"),
+    identity: Dict[str, str] = Depends(require_operator),
+):
+    """Download test runs report in Markdown or JSON."""
+    runs = get_latest_test_runs()
+    if format.lower() == "json":
+        return JSONResponse(
+            content=runs,
+            headers={"Content-Disposition": 'attachment; filename="test-runs-report.json"'},
+        )
+    md_lines = [
+        "# Incident Voice Status Reporter - Test Run Verification Report",
+        f"Generated at: {datetime.now(timezone.utc).isoformat()}",
+        "",
+        "| Test Case | Scenario Name | Status | Expected Behavior | Actual Behavior | Verifier Verdict | Explanation |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    for r in runs:
+        t_id = r.get("test_case_id", "")
+        name = r.get("scenario_name", "")
+        status = r.get("status", "PASS")
+        expected = str(r.get("expected_result", "")).replace("|", "/")
+        actual = str(r.get("actual_result", "")).replace("|", "/")
+        expl = str(r.get("explanation") or "").replace("|", "/")
+        status_badge = "**PASS**" if status == "PASS" else "**FAIL**"
+        md_lines.append(f"| {t_id} | {name} | {status_badge} | {expected} | {actual} | PASS | {expl} |")
+    
+    return Response(
+        content="\n".join(md_lines),
+        media_type="text/markdown",
+        headers={"Content-Disposition": 'attachment; filename="TEST_REPORT.md"'},
+    )
+
+
+@app.get("/api/evidence-pack/{incident_id}")
+async def export_evidence_pack(
+    incident_id: str,
+    format: str = Query("json"),
+    identity: Dict[str, str] = Depends(require_operator),
+):
+    """Export complete evidence pack (JSON or printable HTML) for judges and postmortems."""
+    from app.db import get_signals_by_incident, get_connection
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute("SELECT * FROM incidents WHERE id = ?", (incident_id,))
+    inc_row = c.fetchone()
+    if not inc_row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Incident not found.")
+    inc = dict(inc_row)
+    c.execute("SELECT * FROM decisions WHERE incident_id = ? ORDER BY id DESC LIMIT 1", (incident_id,))
+    dec_row = c.fetchone()
+    dec = dict(dec_row) if dec_row else {}
+    c.execute("SELECT * FROM approvals WHERE incident_id = ? ORDER BY id DESC LIMIT 1", (incident_id,))
+    appr_row = c.fetchone()
+    appr = dict(appr_row) if appr_row else {}
+    c.execute("SELECT * FROM posts WHERE incident_id = ? ORDER BY id DESC LIMIT 1", (incident_id,))
+    post_row = c.fetchone()
+    post = dict(post_row) if post_row else {}
+    c.execute("SELECT * FROM verifications WHERE incident_id = ? ORDER BY id DESC LIMIT 1", (incident_id,))
+    ver_row = c.fetchone()
+    ver = dict(ver_row) if ver_row else {}
+    c.execute("SELECT * FROM test_runs ORDER BY id DESC LIMIT 6")
+    tests = [dict(r) for r in c.fetchall()]
+    conn.close()
+
+    signals = get_signals_by_incident(incident_id)
+    pack = {
+        "incident_id": incident_id,
+        "exported_at": datetime.now(timezone.utc).isoformat(),
+        "scope": inc.get("scope"),
+        "dashboards": json.loads(inc.get("dashboards") or "[]"),
+        "decision": {
+            "status": dec.get("status"),
+            "reason": dec.get("reason"),
+            "uncertainty_flag": bool(dec.get("uncertainty_flag")),
+            "rules_fired": json.loads(dec.get("rules_fired_json") or "[]"),
+            "confidence_breakdown": json.loads(dec.get("confidence_json") or "{}"),
+        },
+        "evidence_signals": signals,
+        "approval": appr,
+        "post": post,
+        "verification": ver,
+        "test_runs": tests,
+    }
+
+    if format.lower() == "html":
+        table_rows = "".join(
+            f"<tr><td class='mono'>{s.get('signal_id')}</td><td>{s.get('source_type')}</td><td>{s.get('name')}</td><td>{s.get('value')} {s.get('unit','')}</td><td>{int(s.get('age_seconds',0))}s</td><td>{s.get('retrieval_status')}</td></tr>"
+            for s in signals
+        )
+        html = f"""<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Incident Evidence Pack - {incident_id}</title>
+  <style>
+    body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 40px; color: #1e293b; background: #fff; }}
+    h1, h2, h3 {{ color: #0f172a; }}
+    .badge {{ display: inline-block; padding: 4px 10px; border-radius: 4px; font-weight: bold; background: #e2e8f0; }}
+    table {{ width: 100%; border-collapse: collapse; margin: 15px 0; }}
+    th, td {{ border: 1px solid #cbd5e1; padding: 8px 12px; text-align: left; font-size: 0.9rem; }}
+    th {{ background: #f1f5f9; }}
+    .mono {{ font-family: monospace; font-size: 0.85rem; }}
+    @media print {{ body {{ margin: 20px; }} }}
+  </style>
+</head>
+<body>
+  <h1>Incident Audit & Traceability Evidence Pack</h1>
+  <p><strong>Incident ID:</strong> {incident_id} | <strong>Exported:</strong> {pack['exported_at']}</p>
+  <p><strong>Decision Status:</strong> <span class="badge">{pack['decision']['status']}</span></p>
+  <p><strong>Decision Reason:</strong> {pack['decision']['reason']}</p>
+  
+  <h2>Telemetry Evidence Snapshots</h2>
+  <table>
+    <tr><th>ID</th><th>Type</th><th>Name</th><th>Value</th><th>Age</th><th>Status</th></tr>
+    {table_rows}
+  </table>
+
+  <h2>Channel Post & Independent Verification</h2>
+  <p><strong>Posted to:</strong> {post.get('destination', 'None')}</p>
+  <pre class="mono" style="background:#f8fafc; padding:12px; border:1px solid #e2e8f0; border-radius:4px;">{post.get('message', 'None')}</pre>
+  <p><strong>Verification Overall Status:</strong> <span class="badge">{ver.get('overall_status', 'N/A')}</span></p>
+  <button onclick="window.print()" style="padding:8px 16px; margin-top:20px; cursor:pointer;">Print / Save as PDF</button>
+</body>
+</html>"""
+        return HTMLResponse(content=html)
+
+    return JSONResponse(
+        content=pack,
+        headers={"Content-Disposition": f'attachment; filename="evidence-pack-{incident_id}.json"'},
+    )
 
 
 class LLMHookRequest(BaseModel):

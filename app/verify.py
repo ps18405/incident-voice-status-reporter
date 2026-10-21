@@ -17,6 +17,7 @@ from app.db import (
     get_all_posts,
     get_approval_by_agent_run,
     get_agent_run,
+    save_verification_record,
 )
 from app.redact import scan_for_unredacted_pii
 
@@ -263,7 +264,7 @@ def run_post_verification(
     failed_count = sum(1 for c in checks if c.status == "FAIL")
     overall = "PASS" if failed_count == 0 else "FAIL"
 
-    return VerificationReport(
+    report = VerificationReport(
         incident_id=incident_id,
         post_id=target_post["id"],
         overall_status=overall,
@@ -273,3 +274,16 @@ def run_post_verification(
         failed_checks=failed_count,
         checks=checks,
     )
+    try:
+        save_verification_record(
+            incident_id=incident_id,
+            agent_run_id=agent_run_id,
+            post_id=target_post["id"] if target_post else None,
+            overall_status=overall,
+            checks={c.name: c.model_dump() for c in checks},
+            observed_text=posted_content if target_post else None,
+            intended_text=approved_text,
+        )
+    except Exception:
+        pass
+    return report

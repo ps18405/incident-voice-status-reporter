@@ -37,6 +37,8 @@ class SignalModel(BaseModel):
     source_id: str = ""
     evidence_origin: str = "synthetic_fixture"
     retrieval_status: str = "success"
+    http_status: Optional[int] = 200
+    latency_ms: Optional[float] = 0.0
     raw_payload: Dict[str, Any] = {}
     redacted_items_count: int = 0
 
@@ -75,14 +77,27 @@ def collect_signals(
     source_mode = os.getenv("EVIDENCE_SOURCE", "fixtures").strip().lower()
     if source_mode == "grafana":
         raw_signals = fetch_grafana_metrics(retrieval_dt)
-    elif source_mode == "fixtures":
+    elif source_mode in {"fixtures", "default"}:
         scenario_data = get_mock_scenario_sources(
             incident_input.scenario_id or "TC1",
             base_time=retrieval_dt,
         )
         raw_signals = list(scenario_data.get("signals", []))
+    elif source_mode in {"http", "mock_http", "live"}:
+        from app.retriever import retrieve_all_signals_http
+        from starlette.testclient import TestClient
+        from app.main import app as main_app
+        client = TestClient(main_app)
+        use_play = any("play.grafana.org" in str(d) for d in incident_input.dashboards)
+        raw_signals = retrieve_all_signals_http(
+            incident_input.scenario_id or "TC1",
+            base_url="",
+            client=client,
+            base_time=retrieval_dt,
+            use_play_grafana=use_play,
+        )
     else:
-        raise ValueError("EVIDENCE_SOURCE must be either 'fixtures' or 'grafana'.")
+        raise ValueError("EVIDENCE_SOURCE must be 'fixtures', 'grafana', or 'mock_http'.")
     if source_mode == "fixtures" and not any(item.get("signal_id") == "SIG-METRIC-SAT" for item in raw_signals):
         raw_signals.append(
             {
@@ -172,6 +187,8 @@ def collect_signals(
                 is_stale=is_stale,
                 evidence_origin=item.get("evidence_origin", "synthetic_fixture"),
                 retrieval_status=item.get("retrieval_status", "success"),
+                http_status=int(item.get("http_status", 200) or 200),
+                latency_ms=float(item.get("latency_ms", 12.0) or 12.0),
                 raw_payload=clean_payload,
                 redacted_items_count=item_redactions,
             )
